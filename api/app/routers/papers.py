@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from openai import OpenAIError
+from openai.types.responses import FileSearchTool as ResponsesFileSearchTool
 from pydantic import BaseModel, HttpUrl
 
 from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
@@ -297,6 +298,13 @@ async def run_extractor(
     agent = get_agent(AgentRole.EXTRACTOR)
     client = get_client()
     tool_payloads = build_tool_payloads(agent)
+    tools: list[Any] = []
+    for payload in tool_payloads:
+        if isinstance(payload, dict) and payload.get("type") == "file_search":
+            tool = ResponsesFileSearchTool(type="file_search", vector_store_ids=[paper.vector_store_id])
+            tools.append(tool.model_dump(mode="json"))
+        else:
+            tools.append(payload)
 
     attachments = [
         {
@@ -348,7 +356,7 @@ async def run_extractor(
                 stream_manager = client.responses.stream(
                     model=agent_defaults.model,
                     input=[system_content, user_payload],
-                    tools=tool_payloads,
+                    tools=tools,
                     attachments=attachments,
                     temperature=agent_defaults.temperature,
                     max_output_tokens=agent_defaults.max_output_tokens,
@@ -359,7 +367,7 @@ async def run_extractor(
                         event_type = getattr(event, "type", "")
 
                         if event_type == START_EVENT_TYPE:
-                            yield _sse_event("stage", {"stage": "extract_start"})
+                            yield _sse_event("stage_update", {"stage": "extract_start"})
                             continue
 
                         if event_type == FILE_SEARCH_STAGE_EVENT:
@@ -371,7 +379,7 @@ async def run_extractor(
                                     paper.id,
                                     redact_vector_store_id(paper.vector_store_id),
                                 )
-                                record_trace("policy_cap_exceeded", POLICY_CAP_CODE)
+                                record_trace("policy.cap.exceeded", POLICY_CAP_CODE)
                                 yield _sse_event(
                                     "error",
                                     {
@@ -382,7 +390,7 @@ async def run_extractor(
                                 )
                                 return
                             file_search_calls += 1
-                            yield _sse_event("stage", {"stage": "file_search_call"})
+                            yield _sse_event("stage_update", {"stage": "file_search_call"})
                             continue
 
                         if event_type == TOKEN_EVENT_TYPE:
@@ -394,7 +402,7 @@ async def run_extractor(
                         if event_type.startswith(REASONING_EVENT_PREFIX):
                             message = getattr(event, "delta", None) or getattr(event, "text", None)
                             if message:
-                                yield _sse_event("log", {"message": message})
+                                yield _sse_event("log_line", {"message": message})
                             continue
 
                         if event_type == COMPLETED_EVENT_TYPE:
@@ -549,7 +557,13 @@ async def run_extractor(
             len(claims_payload),
         )
         record_trace(guardrail_status)
-        yield _sse_event("stage", {"stage": "extract_complete"})
+        yield _sse_event("stage_update", {"stage": "extract_complete"})
         yield _sse_event("result", {"claims": claims_payload})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+
+
+
+

@@ -64,8 +64,10 @@ class FakeResponses:
     def __init__(self, events: List[FakeEvent], final: FakeResponseWrapper) -> None:
         self._events = events
         self._final = final
+        self.last_kwargs: dict[str, Any] | None = None
 
-    def stream(self, **_: Any) -> FakeStream:
+    def stream(self, **kwargs: Any) -> FakeStream:
+        self.last_kwargs = kwargs
         return FakeStream(self._events, self._final)
 
 
@@ -156,7 +158,7 @@ def test_extractor_stream_happy_path(extractor_setup, monkeypatch):
         assert response.status_code == 200
         sse_events = _collect_sse_events(response)
 
-    assert [event["event"] for event in sse_events[:3]] == ["stage", "stage", "token"]
+    assert [event["event"] for event in sse_events[:3]] == ["stage_update", "stage_update", "token"]
     assert sse_events[0]["data"]["stage"] == "extract_start"
     assert sse_events[1]["data"]["stage"] == "file_search_call"
     assert sse_events[2]["data"]["delta"].strip() == "token"
@@ -167,6 +169,10 @@ def test_extractor_stream_happy_path(extractor_setup, monkeypatch):
     assert len(claims) == 1
     assert claims[0]["source_citation"] == "Page 3"
     assert claims[0]["confidence"] == 0.9
+    assert fake_client.responses.last_kwargs
+    tools = fake_client.responses.last_kwargs.get("tools", [])
+    assert tools and tools[0]["type"] == "file_search"
+    assert tools[0]["vector_store_ids"] == [extractor_setup["paper"].vector_store_id]
 
 
 def test_extractor_guardrail_low_confidence(extractor_setup, monkeypatch):
@@ -197,7 +203,7 @@ def test_extractor_guardrail_low_confidence(extractor_setup, monkeypatch):
 
     assert sse_events[-1]["event"] == "error"
     assert sse_events[-1]["data"]["code"] == "E_EXTRACT_LOW_CONFIDENCE"
-    stages = [event for event in sse_events if event["event"] == "stage"]
+    stages = [event for event in sse_events if event["event"] == "stage_update"]
     assert any(stage["data"].get("stage") == "extract_start" for stage in stages)
     assert not any(stage["data"].get("stage") == "extract_complete" for stage in stages)
 
@@ -241,4 +247,4 @@ def test_extractor_policy_cap_error(monkeypatch):
 
     assert sse_events[-1]["event"] == "error"
     assert sse_events[-1]["data"]["code"] == "POLICY_CAP_EXCEEDED"
-    assert not any(event["data"].get("stage") == "extract_complete" for event in sse_events if event["event"] == "stage")
+    assert not any(event["data"].get("stage") == "extract_complete" for event in sse_events if event["event"] == "stage_update")

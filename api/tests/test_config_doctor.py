@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 
@@ -22,7 +22,6 @@ def test_config_doctor_reports_presence(monkeypatch):
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-demo")
 
-    get_settings.cache_clear()
     client = TestClient(app)
 
     response = client.get("/internal/config/doctor")
@@ -34,6 +33,12 @@ def test_config_doctor_reports_presence(monkeypatch):
     assert payload["openai_api_key_present"] is True
     assert payload["all_core_present"] is True
     assert payload["missing_env_keys"] == []
+    assert payload["responses_mode_enabled"] is True
+    assert isinstance(payload["openai_python_version"], str)
+    assert payload["openai_python_version"]
+    assert payload["models"]["selected"] == get_settings().openai_model
+    assert payload["tools"]["file_search"] is True
+    assert payload["tools"]["web_search"] is True
 
 
 def test_config_doctor_missing_keys(monkeypatch):
@@ -42,7 +47,6 @@ def test_config_doctor_missing_keys(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
 
-    get_settings.cache_clear()
     client = TestClient(app)
 
     response = client.get("/internal/config/doctor")
@@ -55,3 +59,6 @@ def test_config_doctor_missing_keys(monkeypatch):
     assert "SUPABASE_URL" in payload["missing_env_keys"]
     assert "SUPABASE_SERVICE_ROLE_KEY" in payload["missing_env_keys"]
     assert "OPENAI_API_KEY" in payload["missing_env_keys"]
+    assert payload["responses_mode_enabled"] is True
+    assert isinstance(payload["openai_python_version"], str)
+    assert payload["models"]["selected"] == get_settings().openai_model

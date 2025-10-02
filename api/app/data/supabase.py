@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 try:  # pragma: no cover - optional dependency for runtime environments
     from supabase import Client, create_client
@@ -17,6 +17,19 @@ except Exception:  # pragma: no cover
 from .models import PaperCreate, PaperRecord, StorageArtifact
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_headers(headers: Mapping[str, Any] | None) -> dict[str, str]:
+    """Return a header dict with string-only values, dropping Nones."""
+
+    if not headers:
+        return {}
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        if value is None:
+            continue
+        sanitized[key] = str(value)
+    return sanitized
 
 
 class SupabaseClientFactory:
@@ -122,11 +135,8 @@ class SupabaseStorage:
         return self._bucket_name
 
     def store_pdf(self, key: str, data: bytes) -> StorageArtifact:
-        self._storage.upload(
-            path=key,
-            file=data,
-            file_options={"contentType": "application/pdf", "upsert": True},
-        )
+        headers = sanitize_headers({"contentType": "application/pdf"})
+        self._storage.upload(path=key, file=data, file_options=headers)
         return StorageArtifact(bucket=self._bucket_name, path=key)
 
     def delete_object(self, key: str) -> bool:
@@ -165,4 +175,5 @@ __all__ = [
     "SupabaseClientFactory",
     "SupabaseDatabase",
     "SupabaseStorage",
+    "sanitize_headers",
 ]

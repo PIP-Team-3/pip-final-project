@@ -1,8 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
+
+import openai
 
 from .settings import get_settings
 
@@ -27,6 +29,22 @@ class ConfigHealth:
     all_core_present: bool
     missing_env_keys: List[str]
     caps: Dict[str, int]
+    responses_mode_enabled: bool
+    openai_python_version: str
+    models: Dict[str, str]
+    tools: Dict[str, bool]
+
+
+def _tool_status() -> Dict[str, bool]:
+    try:
+        from app.agents.tooling import HOSTED_TOOLS
+    except Exception:  # pragma: no cover - defensive import fallback
+        return {"file_search": False, "web_search": False}
+
+    return {
+        "file_search": "file_search" in HOSTED_TOOLS,
+        "web_search": "web_search" in HOSTED_TOOLS,
+    }
 
 
 def config_snapshot() -> ConfigHealth:
@@ -42,6 +60,7 @@ def config_snapshot() -> ConfigHealth:
         "web_search_per_run": settings.tool_cap_web_search_per_run,
         "code_interpreter_seconds": settings.tool_cap_code_interpreter_seconds,
     }
+    tools = _tool_status()
     return ConfigHealth(
         supabase_url_present=presence["supabase_url"],
         supabase_service_role_present=presence["supabase_service_role_key"],
@@ -50,6 +69,10 @@ def config_snapshot() -> ConfigHealth:
         all_core_present=not missing,
         missing_env_keys=missing,
         caps=caps,
+        responses_mode_enabled=True,
+        openai_python_version=getattr(openai, "__version__", "unknown"),
+        models={"selected": settings.openai_model},
+        tools=tools,
     )
 
 

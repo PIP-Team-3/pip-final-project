@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 from typing import Any, List
@@ -19,7 +19,7 @@ class FileSearchService:
     def add_pdf(self, vector_store_id: str, filename: str, data: bytes) -> str:
         file_obj = self._client.files.create(
             file=(filename, io.BytesIO(data), "application/pdf"),
-            purpose="file_search",
+            purpose="assistants",
         )
         self._client.vector_stores.files.create(
             vector_store_id=vector_store_id,
