@@ -7,19 +7,29 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class PaperCreate(BaseModel):
-    id: Optional[str] = Field(None, description="Primary key value; required for schema v0")
-    title: str = Field(..., description="Paper title or filename fallback")
-    url: Optional[HttpUrl] = Field(None, description="Source URL when provided")
-    checksum: str = Field(..., description="SHA256 checksum of the uploaded PDF")
-    created_by: str = Field(..., description="User identifier for RLS scoping")
-    storage_path: str = Field(..., description="Supabase Storage path for the PDF")
-    vector_store_id: Optional[str] = Field(None, description="OpenAI File Search vector store id")
-    file_name: Optional[str] = Field(None, description="Original filename if available")
+    id: str
+    title: str
+    source_url: Optional[HttpUrl] = None
+    doi: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    pdf_storage_path: str
+    vector_store_id: str
+    pdf_sha256: str
+    status: str
+    created_by: str
+    is_public: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {
+        "extra": "ignore",
+    }
 
 
 class PaperRecord(PaperCreate):
-    id: str
-    created_at: datetime
+    model_config = {
+        "extra": "ignore",
+    }
 
 
 class StorageArtifact(BaseModel):

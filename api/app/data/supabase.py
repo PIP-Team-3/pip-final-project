@@ -30,25 +30,24 @@ class SupabaseClientFactory:
 
 
 class SupabaseDatabase:
-    """Thin wrapper over Supabase PostgREST endpoint with RLS awareness."""
+    """Thin wrapper over Supabase PostgREST endpoint."""
 
     def __init__(self, client: Client) -> None:
         self._client = client
 
     def insert_paper(self, payload: PaperCreate) -> PaperRecord:
-        data = payload.model_dump()
-        if not data.get("id"):
-            raise ValueError("PaperCreate.id is required for schema v0")
+        data = payload.model_dump(mode="json")
         response = (
             self._client.table("papers")
             .insert(data)
             .select("*")
+            .single()
             .execute()
         )
-        result = getattr(response, "data", None) or []
+        result = getattr(response, "data", None)
         if not result:
             raise RuntimeError("Failed to insert paper record")
-        return PaperRecord.model_validate(result[0])
+        return PaperRecord.model_validate(result)
 
     def get_paper(self, paper_id: str) -> Optional[PaperRecord]:
         response = (
@@ -63,11 +62,11 @@ class SupabaseDatabase:
             return None
         return PaperRecord.model_validate(data)
 
-    def get_paper_by_title(self, title: str) -> Optional[PaperRecord]:
+    def get_paper_by_checksum(self, checksum: str) -> Optional[PaperRecord]:
         response = (
             self._client.table("papers")
             .select("*")
-            .eq("title", title)
+            .eq("pdf_sha256", checksum)
             .limit(1)
             .execute()
         )
@@ -93,7 +92,7 @@ class SupabaseDatabase:
     ) -> PaperRecord:
         update_payload: dict[str, Any] = {"vector_store_id": vector_store_id}
         if storage_path:
-            update_payload["storage_path"] = storage_path
+            update_payload["pdf_storage_path"] = storage_path
         response = (
             self._client.table("papers")
             .update(update_payload)
@@ -132,6 +131,16 @@ class SupabaseStorage:
         signed_url = response.get("signedURL") if isinstance(response, dict) else None
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         return StorageArtifact(bucket=self._bucket_name, path=key, signed_url=signed_url, expires_at=expires_at)
+
+    def object_exists(self, key: str) -> bool:
+        if not key:
+            return False
+        parts = key.rsplit("/", 1)
+        folder = parts[0] if len(parts) > 1 else ""
+        filename = parts[-1]
+        result = self._storage.list(folder)
+        items = result if isinstance(result, list) else result.get("data", [])
+        return any(item.get("name") == filename for item in items)
 
 
 __all__ = [

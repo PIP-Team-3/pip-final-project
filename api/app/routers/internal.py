@@ -71,17 +71,21 @@ async def db_smoke_test(db=Depends(get_supabase_db)) -> DbSmokeResponse:
     """Perform a dev-only papers CRUD smoke test."""
 
     paper_id = str(uuid4())
-    title = f"SMOKE-TEST-{datetime.now(timezone.utc).isoformat()}"
+    now = datetime.now(timezone.utc)
+    title = f"SMOKE-TEST-{now.isoformat()}"
     created = db.insert_paper(
         PaperCreate(
             id=paper_id,
             title=title,
-            url=None,
-            checksum="smoke-checksum",
+            source_url=None,
+            pdf_storage_path=f"papers/dev/smoke/{paper_id}.pdf",
+            vector_store_id="vs-smoke",
+            pdf_sha256="smoke-checksum",
+            status="smoke",
             created_by="dev-smoke",
-            storage_path=f"papers/dev/smoke/{paper_id}.pdf",
-            vector_store_id=None,
-            file_name=None,
+            is_public=False,
+            created_at=now,
+            updated_at=now,
         )
     )
     retrieved = db.get_paper(created.id)

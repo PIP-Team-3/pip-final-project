@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -23,6 +25,8 @@ from ..dependencies import (
 )
 from ..services import FileSearchService
 
+logger = logging.getLogger(__name__)
+
 MAX_PAPER_BYTES = 15 * 1024 * 1024  # 15 MiB limit for uploads
 
 router = APIRouter(prefix="/api/v1/papers", tags=["papers"])
@@ -35,9 +39,8 @@ class IngestResponse(BaseModel):
 
 
 class VerifyResponse(BaseModel):
-    paper_id: str
-    query: str
-    results: list[dict[str, str]]
+    storage_path_present: bool
+    vector_store_present: bool
 
 
 def _require_pdf(file: UploadFile) -> None:
@@ -79,7 +82,15 @@ async def _download_url(url: HttpUrl) -> tuple[bytes, str]:
 
 
 def _compute_checksum(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    sha256 = hashlib.sha256()
+    sha256.update(data)
+    return sha256.hexdigest()
+
+
+def _build_storage_path(timestamp: datetime, paper_id: str) -> str:
+    return (
+        f"papers/dev/{timestamp.year:04d}/{timestamp.month:02d}/{timestamp.day:02d}/{paper_id}.pdf"
+    )
 
 
 @router.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
@@ -120,76 +131,78 @@ async def ingest_paper(
         )
 
     checksum = _compute_checksum(data)
-    storage_key = f"{checksum}/{filename}"
+    existing = db.get_paper_by_checksum(checksum)
+    if existing:
+        logger.info(
+            "ingest.idempotent paper_id=%s storage_path=%s vector_store_id=%s***",
+            existing.id,
+            existing.pdf_storage_path,
+            (existing.vector_store_id or "")[:8],
+        )
+        return IngestResponse(
+            paper_id=existing.id,
+            vector_store_id=existing.vector_store_id,
+            storage_path=existing.pdf_storage_path,
+        )
 
-    try:
-        artifact = storage.store_pdf(storage_key, data)
-    except Exception as exc:  # pragma: no cover - network call
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "E_STORAGE_UPLOAD_FAILED",
-                "message": "Failed to persist PDF to storage",
-                "remediation": "Retry later or verify Supabase configuration",
-            },
-        ) from exc
+    paper_id = str(uuid4())
+    now = datetime.now(timezone.utc)
+    storage_path = _build_storage_path(now, paper_id)
+    logger.info("ingest.storage.write paper_id=%s path=%s", paper_id, storage_path)
+    with traced_run("p2n.ingest.storage.write"):
+        storage.store_pdf(storage_path, data)
 
-    try:
-        vector_store_id = file_search.create_vector_store(name=title or filename)
+    logger.info("ingest.file_search.index paper_id=%s", paper_id)
+    with traced_run("p2n.ingest.file_search.index"):
+        vector_store_id = file_search.create_vector_store(name=f"paper-{paper_id}")
         file_search.add_pdf(vector_store_id, filename=filename, data=data)
-    except Exception as exc:  # pragma: no cover - network call
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "E_VECTOR_STORE_FAILED",
-                "message": "Failed to create File Search index",
-                "remediation": "Retry after verifying OpenAI credentials",
-            },
-        ) from exc
 
     paper = db.insert_paper(
         PaperCreate(
+            id=paper_id,
             title=title or filename,
-            url=str(url) if url else None,
-            checksum=checksum,
-            created_by=created_by,
-            storage_path=artifact.path,
+            source_url=url,
+            pdf_storage_path=storage_path,
             vector_store_id=vector_store_id,
-            file_name=filename,
+            pdf_sha256=checksum,
+            status="ingested",
+            created_by=created_by,
+            is_public=False,
+            created_at=now,
+            updated_at=now,
         )
     )
 
+    logger.info(
+        "ingest.completed paper_id=%s storage_path=%s vector_store_id=%s***",
+        paper.id,
+        paper.pdf_storage_path,
+        vector_store_id[:8],
+    )
     return IngestResponse(
         paper_id=paper.id,
         vector_store_id=vector_store_id,
-        storage_path=artifact.path,
+        storage_path=paper.pdf_storage_path,
     )
 
 
 @router.get("/{paper_id}/verify", response_model=VerifyResponse)
-async def verify_citations(
+async def verify_ingest(
     paper_id: str,
-    q: str,
     db=Depends(get_supabase_db),
+    storage=Depends(get_supabase_storage),
     file_search: FileSearchService = Depends(get_file_search_service),
 ):
     paper = db.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found")
-    if not paper.vector_store_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Paper is not indexed for search",
-        )
-    results = file_search.search(paper.vector_store_id, query=q, max_results=3)
-    formatted = []
-    for item in results:
-        if isinstance(item, dict):
-            text = item.get("text") or ""
-        else:
-            text = getattr(item, "text", "")
-        formatted.append({"text": text, "source": paper.vector_store_id})
-    return VerifyResponse(paper_id=paper_id, query=q, results=formatted)
+
+    storage_present = storage.object_exists(paper.pdf_storage_path)
+    vector_present = file_search.vector_store_exists(paper.vector_store_id)
+    return VerifyResponse(
+        storage_path_present=storage_present,
+        vector_store_present=vector_present,
+    )
 
 
 @router.post("/{paper_id}/extract")

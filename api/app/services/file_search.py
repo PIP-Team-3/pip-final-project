@@ -49,5 +49,14 @@ class FileSearchService:
         )
         return getattr(response, "output", [])
 
+    def vector_store_exists(self, vector_store_id: str) -> bool:
+        if not vector_store_id:
+            return False
+        try:
+            self._client.vector_stores.retrieve(vector_store_id)
+            return True
+        except Exception:
+            return False
+
 
 __all__ = ["FileSearchService"]
