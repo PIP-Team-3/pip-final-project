@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
@@ -16,7 +16,7 @@ class PaperCreate(BaseModel):
     vector_store_id: str
     pdf_sha256: str
     status: str
-    created_by: str
+    created_by: Optional[str] = None
     is_public: bool = False
     created_at: datetime
     updated_at: datetime

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
+from uuid import UUID
 
 try:  # pragma: no cover - optional dependency for runtime environments
     from supabase import Client, create_client
@@ -32,6 +33,18 @@ def sanitize_headers(headers: Mapping[str, Any] | None) -> dict[str, str]:
     return sanitized
 
 
+def is_valid_uuid(value: Optional[str]) -> bool:
+    """Return True when value is a valid RFC4122 UUID string."""
+
+    if not value:
+        return False
+    try:
+        UUID(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 class SupabaseClientFactory:
     """Creates Supabase clients while keeping service role usage server-side."""
 
@@ -52,15 +65,14 @@ class SupabaseDatabase:
         self._client = client
 
     def insert_paper(self, payload: PaperCreate) -> PaperRecord:
-        data = payload.model_dump(mode="json")
-        response = (
-            self._client.table("papers")
-            .insert(data)
-            .select("*")
-            .single()
-            .execute()
-        )
+        data = payload.model_dump(mode="json", exclude_none=False)
+        created_by = data.get("created_by")
+        if not is_valid_uuid(created_by):
+            data.pop("created_by", None)
+        response = self._client.table("papers").insert(data).execute()
         result = getattr(response, "data", None)
+        if isinstance(result, list):
+            result = result[0] if result else None
         if not result:
             raise RuntimeError("Failed to insert paper record")
         return PaperRecord.model_validate(result)
@@ -176,4 +188,5 @@ __all__ = [
     "SupabaseDatabase",
     "SupabaseStorage",
     "sanitize_headers",
+    "is_valid_uuid",
 ]

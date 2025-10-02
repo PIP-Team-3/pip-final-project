@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -181,5 +182,36 @@ def test_ingest_database_failure_triggers_cleanup(override_dependencies):
     payload = {"file": ("paper.pdf", b"%PDF-1.4 mock", "application/pdf")}
     response = client.post("/api/v1/papers/ingest", files=payload)
     assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "E_DB_INSERT_FAILED"
     assert len(override_dependencies["storage"].deleted) == 1
     assert override_dependencies["storage"].deleted[0].endswith(".pdf")
+
+
+def test_ingest_created_by_invalid_omitted(override_dependencies):
+    client = TestClient(app)
+    payload = {"file": ("paper.pdf", b"%PDF-1.4 mock", "application/pdf")}
+    response = client.post(
+        "/api/v1/papers/ingest",
+        files=payload,
+        data={"created_by": "system"},
+    )
+    assert response.status_code == 201
+    paper_id = response.json()["paper_id"]
+    record = override_dependencies["db"].records[paper_id]
+    assert record.created_by is None
+
+
+def test_ingest_created_by_good_uuid(override_dependencies):
+    client = TestClient(app)
+    payload = {"file": ("paper.pdf", b"%PDF-1.4 mock", "application/pdf")}
+    created_by = str(uuid4())
+    response = client.post(
+        "/api/v1/papers/ingest",
+        files=payload,
+        data={"created_by": created_by},
+    )
+    assert response.status_code == 201
+    paper_id = response.json()["paper_id"]
+    record = override_dependencies["db"].records[paper_id]
+    assert record.created_by == created_by

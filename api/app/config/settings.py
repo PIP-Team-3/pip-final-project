@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from functools import lru_cache
 from typing import Optional
@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     tool_cap_file_search_per_run: int = 10
     tool_cap_web_search_per_run: int = 5
     tool_cap_code_interpreter_seconds: int = 60
+
+    p2n_dev_user_id: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

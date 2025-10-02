@@ -8,7 +8,7 @@ from typing import Any, Iterator, Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from openai import OpenAIError
 from openai.types.responses import FileSearchTool as ResponsesFileSearchTool
@@ -19,6 +19,8 @@ from ..agents.runtime import build_tool_payloads
 from ..agents.tooling import ToolUsageTracker
 from ..config.llm import agent_defaults, get_client, traced_run
 from ..data import PaperCreate
+from ..config.settings import get_settings
+from ..data.supabase import is_valid_uuid
 from ..dependencies import (
     get_file_search_service,
     get_supabase_db,
@@ -120,20 +122,27 @@ async def ingest_paper(
     file: Optional[UploadFile] = File(None),
     url: Optional[HttpUrl] = None,
     title: Optional[str] = None,
-    created_by: str = "system",
+    created_by: Optional[str] = Form(None),
     db=Depends(get_supabase_db),
     storage=Depends(get_supabase_storage),
     file_search: FileSearchService = Depends(get_file_search_service),
 ):
-    if not file and not url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "E_NO_INPUT",
-                "message": "Provide either a PDF upload or a URL",
-                "remediation": "Attach a PDF or include a URL parameter",
-            },
-        )
+    settings = get_settings()
+    fallback_created_by = (
+        settings.p2n_dev_user_id if is_valid_uuid(settings.p2n_dev_user_id) else None
+    )
+
+    effective_created_by: Optional[str] = None
+    if created_by and is_valid_uuid(created_by):
+        effective_created_by = created_by
+    elif created_by:
+        logger.info("ingest.created_by.invalid provided value omitted")
+
+    if not effective_created_by:
+        effective_created_by = fallback_created_by
+
+    created_by_present = bool(effective_created_by)
+    logger.info("ingest.request created_by_present=%s", created_by_present)
 
     if file:
         _require_pdf(file)
@@ -156,10 +165,11 @@ async def ingest_paper(
     existing = db.get_paper_by_checksum(checksum)
     if existing:
         logger.info(
-            "ingest.idempotent paper_id=%s storage_path=%s vector_store_id=%s",
+            "ingest.idempotent paper_id=%s storage_path=%s vector_store_id=%s created_by_present=%s",
             existing.id,
             existing.pdf_storage_path,
             redact_vector_store_id(existing.vector_store_id),
+            existing.created_by is not None,
         )
         return IngestResponse(
             paper_id=existing.id,
@@ -214,7 +224,7 @@ async def ingest_paper(
                 vector_store_id=vector_store_id,
                 pdf_sha256=checksum,
                 status="ingested",
-                created_by=created_by,
+                created_by=effective_created_by,
                 is_public=False,
                 created_at=now,
                 updated_at=now,
@@ -222,10 +232,11 @@ async def ingest_paper(
         )
     except Exception as exc:
         logger.exception(
-            "ingest.db.insert.failed paper_id=%s storage_path=%s vector_store_id=%s",
+            "ingest.db.insert.failed paper_id=%s storage_path=%s vector_store_id=%s created_by_present=%s",
             paper_id,
             storage_path,
             redact_vector_store_id(vector_store_id),
+            created_by_present,
         )
         try:
             cleanup_ok = storage.delete_object(storage_path)
@@ -246,13 +257,21 @@ async def ingest_paper(
                 storage_path,
                 redact_vector_store_id(vector_store_id),
             )
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "E_DB_INSERT_FAILED",
+                "message": "Failed to persist paper metadata",
+                "remediation": "Review Supabase credentials and retry the ingest",
+            },
+        ) from exc
 
     logger.info(
-        "ingest.completed paper_id=%s storage_path=%s vector_store_id=%s",
+        "ingest.completed paper_id=%s storage_path=%s vector_store_id=%s created_by_present=%s",
         paper.id,
         paper.pdf_storage_path,
         redact_vector_store_id(vector_store_id),
+        created_by_present,
     )
     return IngestResponse(
         paper_id=paper.id,
@@ -561,6 +580,8 @@ async def run_extractor(
         yield _sse_event("result", {"claims": claims_payload})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 
 
 
