@@ -1,18 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Iterator, Optional
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
+from openai import OpenAIError
 from pydantic import BaseModel, HttpUrl
 
-from ..agents import AgentRole, get_agent
+from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
 from ..agents.runtime import build_tool_payloads
 from ..agents.tooling import ToolUsageTracker
 from ..config.llm import agent_defaults, get_client, traced_run
@@ -24,10 +25,25 @@ from ..dependencies import (
     get_tool_tracker,
 )
 from ..services import FileSearchService
+from ..tools.errors import ToolUsagePolicyError
+from ..utils.redaction import redact_vector_store_id
 
 logger = logging.getLogger(__name__)
 
 MAX_PAPER_BYTES = 15 * 1024 * 1024  # 15 MiB limit for uploads
+EXTRACTOR_AGENT_NAME = "extractor"
+START_EVENT_TYPE = "response.created"
+FILE_SEARCH_STAGE_EVENT = "response.file_search_call.searching"
+TOKEN_EVENT_TYPE = "response.output_text.delta"
+REASONING_EVENT_PREFIX = "response.reasoning"
+COMPLETED_EVENT_TYPE = "response.completed"
+FAILED_EVENT_TYPES = {"response.failed", "response.error"}
+
+ERROR_LOW_CONFIDENCE = "E_EXTRACT_LOW_CONFIDENCE"
+ERROR_RUN_FAILED = "E_EXTRACT_RUN_FAILED"
+ERROR_NO_OUTPUT = "E_EXTRACT_NO_OUTPUT"
+ERROR_OPENAI = "E_EXTRACT_OPENAI_ERROR"
+POLICY_CAP_CODE = "POLICY_CAP_EXCEEDED"
 
 router = APIRouter(prefix="/api/v1/papers", tags=["papers"])
 
@@ -93,6 +109,11 @@ def _build_storage_path(timestamp: datetime, paper_id: str) -> str:
     )
 
 
+def _sse_event(event_type: str, payload: dict[str, Any]) -> str:
+    data = {"agent": EXTRACTOR_AGENT_NAME, **payload}
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
 @router.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_paper(
     file: Optional[UploadFile] = File(None),
@@ -126,7 +147,7 @@ async def ingest_paper(
             detail={
                 "code": "E_FILE_TOO_LARGE",
                 "message": "PDF exceeds 15 MiB upload cap",
-                "remediation": "Upload a smaller file or compress the PDF",
+                "remediation": "Compress or trim the PDF before uploading",
             },
         )
 
@@ -134,10 +155,10 @@ async def ingest_paper(
     existing = db.get_paper_by_checksum(checksum)
     if existing:
         logger.info(
-            "ingest.idempotent paper_id=%s storage_path=%s vector_store_id=%s***",
+            "ingest.idempotent paper_id=%s storage_path=%s vector_store_id=%s",
             existing.id,
             existing.pdf_storage_path,
-            (existing.vector_store_id or "")[:8],
+            redact_vector_store_id(existing.vector_store_id),
         )
         return IngestResponse(
             paper_id=existing.id,
@@ -152,32 +173,85 @@ async def ingest_paper(
     with traced_run("p2n.ingest.storage.write"):
         storage.store_pdf(storage_path, data)
 
+    vector_store_id: Optional[str] = None
     logger.info("ingest.file_search.index paper_id=%s", paper_id)
-    with traced_run("p2n.ingest.file_search.index"):
-        vector_store_id = file_search.create_vector_store(name=f"paper-{paper_id}")
-        file_search.add_pdf(vector_store_id, filename=filename, data=data)
-
-    paper = db.insert_paper(
-        PaperCreate(
-            id=paper_id,
-            title=title or filename,
-            source_url=url,
-            pdf_storage_path=storage_path,
-            vector_store_id=vector_store_id,
-            pdf_sha256=checksum,
-            status="ingested",
-            created_by=created_by,
-            is_public=False,
-            created_at=now,
-            updated_at=now,
+    try:
+        with traced_run("p2n.ingest.file_search.index"):
+            vector_store_id = file_search.create_vector_store(name=f"paper-{paper_id}")
+            file_search.add_pdf(vector_store_id, filename=filename, data=data)
+    except OpenAIError as exc:
+        logger.exception(
+            "ingest.file_search.failed paper_id=%s vector_store_id=%s",
+            paper_id,
+            redact_vector_store_id(vector_store_id),
         )
-    )
+        cleanup_ok = storage.delete_object(storage_path)
+        log_func = logger.info if cleanup_ok else logger.warning
+        log_func(
+            "ingest.storage.cleanup.%s paper_id=%s path=%s vector_store_id=%s",
+            "completed" if cleanup_ok else "not_found",
+            paper_id,
+            storage_path,
+            redact_vector_store_id(vector_store_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "E_FILESEARCH_INDEX_FAILED",
+                "message": "Failed to index paper into File Search",
+                "remediation": "Verify the OpenAI API key has File Search access and retry the ingest",
+            },
+        ) from exc
+
+    try:
+        paper = db.insert_paper(
+            PaperCreate(
+                id=paper_id,
+                title=title or filename,
+                source_url=url,
+                pdf_storage_path=storage_path,
+                vector_store_id=vector_store_id,
+                pdf_sha256=checksum,
+                status="ingested",
+                created_by=created_by,
+                is_public=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    except Exception as exc:
+        logger.exception(
+            "ingest.db.insert.failed paper_id=%s storage_path=%s vector_store_id=%s",
+            paper_id,
+            storage_path,
+            redact_vector_store_id(vector_store_id),
+        )
+        try:
+            cleanup_ok = storage.delete_object(storage_path)
+        except Exception as cleanup_exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "ingest.storage.cleanup.error paper_id=%s path=%s vector_store_id=%s error=%s",
+                paper_id,
+                storage_path,
+                redact_vector_store_id(vector_store_id),
+                cleanup_exc,
+            )
+        else:
+            log_func = logger.info if cleanup_ok else logger.warning
+            log_func(
+                "ingest.storage.cleanup.%s paper_id=%s path=%s vector_store_id=%s",
+                "completed" if cleanup_ok else "not_found",
+                paper_id,
+                storage_path,
+                redact_vector_store_id(vector_store_id),
+            )
+        raise
 
     logger.info(
-        "ingest.completed paper_id=%s storage_path=%s vector_store_id=%s***",
+        "ingest.completed paper_id=%s storage_path=%s vector_store_id=%s",
         paper.id,
         paper.pdf_storage_path,
-        vector_store_id[:8],
+        redact_vector_store_id(vector_store_id),
     )
     return IngestResponse(
         paper_id=paper.id,
@@ -215,6 +289,11 @@ async def run_extractor(
     if not paper or not paper.vector_store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper not ready for extraction")
 
+    logger.info(
+        "extractor.run.start paper_id=%s vector_store_id=%s",
+        paper.id,
+        redact_vector_store_id(paper.vector_store_id),
+    )
     agent = get_agent(AgentRole.EXTRACTOR)
     client = get_client()
     tool_payloads = build_tool_payloads(agent)
@@ -247,23 +326,230 @@ async def run_extractor(
         ],
     }
 
-    def _track_tool(event_type: str) -> None:
-        if event_type.startswith("response.file_search"):
-            tracker.record_call("file_search")
+    def event_stream() -> Iterator[str]:
+        file_search_calls = 0
+        guardrail_status = "pending"
+        final_response: Any | None = None
+        span: Any | None = None
 
-    def event_stream():
-        with traced_run("extractor-run"):
-            with client.responses.stream(
-                model=agent_defaults.model,
-                input=[system_content, user_payload],
-                tools=tool_payloads,
-                attachments=attachments,
-                temperature=agent_defaults.temperature,
-                max_output_tokens=agent_defaults.max_output_tokens,
-            ) as stream:
-                for event in stream:
-                    event_type = getattr(event, "type", "message")
-                    _track_tool(event_type)
-                    yield f"event: {event_type}\ndata: {json.dumps(event.model_dump(mode='json'))}\n\n"
+        def record_trace(status: str, code: Optional[str] = None) -> None:
+            if span is None:
+                return
+            setter = getattr(span, "set_attribute", None)
+            if callable(setter):
+                setter("p2n.tool.file_search.calls", file_search_calls)
+                setter("p2n.guardrail.extractor", status)
+                if code:
+                    setter("p2n.error.code", code)
+
+        try:
+            with traced_run("p2n.extractor.run") as traced_span:
+                span = traced_span
+                stream_manager = client.responses.stream(
+                    model=agent_defaults.model,
+                    input=[system_content, user_payload],
+                    tools=tool_payloads,
+                    attachments=attachments,
+                    temperature=agent_defaults.temperature,
+                    max_output_tokens=agent_defaults.max_output_tokens,
+                    text_format=agent.output_type,
+                )
+                with stream_manager as stream:
+                    for event in stream:
+                        event_type = getattr(event, "type", "")
+
+                        if event_type == START_EVENT_TYPE:
+                            yield _sse_event("stage", {"stage": "extract_start"})
+                            continue
+
+                        if event_type == FILE_SEARCH_STAGE_EVENT:
+                            try:
+                                tracker.record_call("file_search")
+                            except ToolUsagePolicyError as exc:
+                                logger.warning(
+                                    "extractor.policy.cap_exceeded paper_id=%s vector_store_id=%s",
+                                    paper.id,
+                                    redact_vector_store_id(paper.vector_store_id),
+                                )
+                                record_trace("policy_cap_exceeded", POLICY_CAP_CODE)
+                                yield _sse_event(
+                                    "error",
+                                    {
+                                        "code": POLICY_CAP_CODE,
+                                        "message": str(exc),
+                                        "remediation": "Reduce File Search usage or adjust the configured cap",
+                                    },
+                                )
+                                return
+                            file_search_calls += 1
+                            yield _sse_event("stage", {"stage": "file_search_call"})
+                            continue
+
+                        if event_type == TOKEN_EVENT_TYPE:
+                            delta = getattr(event, "delta", "")
+                            if delta:
+                                yield _sse_event("token", {"delta": delta})
+                            continue
+
+                        if event_type.startswith(REASONING_EVENT_PREFIX):
+                            message = getattr(event, "delta", None) or getattr(event, "text", None)
+                            if message:
+                                yield _sse_event("log", {"message": message})
+                            continue
+
+                        if event_type == COMPLETED_EVENT_TYPE:
+                            final_response = getattr(event, "response", None)
+                            continue
+
+                        if event_type in FAILED_EVENT_TYPES:
+                            error = getattr(event, "error", None)
+                            message = getattr(error, "message", None) or "Extractor run failed"
+                            logger.error(
+                                "extractor.run.failed paper_id=%s vector_store_id=%s message=%s",
+                                paper.id,
+                                redact_vector_store_id(paper.vector_store_id),
+                                message,
+                            )
+                            record_trace("failed", ERROR_RUN_FAILED)
+                            yield _sse_event(
+                                "error",
+                                {
+                                    "code": ERROR_RUN_FAILED,
+                                    "message": message,
+                                    "remediation": "Retry extraction after resolving the upstream failure",
+                                },
+                            )
+                            return
+
+                    if final_response is None:
+                        try:
+                            final_response = stream.get_final_response()
+                        except Exception as exc:  # pragma: no cover - defensive
+                            logger.exception(
+                                "extractor.final_response.error paper_id=%s vector_store_id=%s",
+                                paper.id,
+                                redact_vector_store_id(paper.vector_store_id),
+                            )
+                            record_trace("failed", ERROR_NO_OUTPUT)
+                            yield _sse_event(
+                                "error",
+                                {
+                                    "code": ERROR_NO_OUTPUT,
+                                    "message": "Extractor did not return a structured payload",
+                                    "remediation": "Retry extraction or inspect agent configuration",
+                                },
+                            )
+                            return
+        except OpenAIError as exc:
+            logger.exception(
+                "extractor.run.openai_error paper_id=%s vector_store_id=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+            )
+            record_trace("failed", ERROR_OPENAI)
+            yield _sse_event(
+                "error",
+                {
+                    "code": ERROR_OPENAI,
+                    "message": "OpenAI API request failed during extraction",
+                    "remediation": "Verify API credentials and retry the extraction",
+                },
+            )
+            return
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.exception(
+                "extractor.run.unexpected_error paper_id=%s vector_store_id=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+            )
+            record_trace("failed", ERROR_RUN_FAILED)
+            yield _sse_event(
+                "error",
+                {
+                    "code": ERROR_RUN_FAILED,
+                    "message": "Unexpected error during extraction",
+                    "remediation": "Check server logs for details and retry",
+                },
+            )
+            return
+
+        if not final_response:
+            logger.warning(
+                "extractor.run.no_output paper_id=%s vector_store_id=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+            )
+            record_trace("failed", ERROR_NO_OUTPUT)
+            yield _sse_event(
+                "error",
+                {
+                    "code": ERROR_NO_OUTPUT,
+                    "message": "Extractor did not produce any claims",
+                    "remediation": "Retry extraction or update the paper inputs",
+                },
+            )
+            return
+
+        parsed_output = getattr(final_response, "output_parsed", None)
+        if parsed_output is None:
+            logger.warning(
+                "extractor.run.output_unparsed paper_id=%s vector_store_id=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+            )
+            record_trace("failed", ERROR_NO_OUTPUT)
+            yield _sse_event(
+                "error",
+                {
+                    "code": ERROR_NO_OUTPUT,
+                    "message": "Extractor output was not parseable",
+                    "remediation": "Ensure the extractor schema matches agent output",
+                },
+            )
+            return
+
+        try:
+            agent.output_guardrail.enforce(parsed_output)
+        except OutputGuardrailTripwireTriggered as exc:
+            logger.warning(
+                "extractor.guardrail.failed paper_id=%s vector_store_id=%s reason=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+                exc,
+            )
+            record_trace("failed", ERROR_LOW_CONFIDENCE)
+            yield _sse_event(
+                "error",
+                {
+                    "code": ERROR_LOW_CONFIDENCE,
+                    "message": "Extractor guardrail rejected the claims",
+                    "remediation": "Review missing citations or low confidence claims and retry",
+                },
+            )
+            return
+
+        guardrail_status = "passed"
+        claims_payload = [
+            {
+                "dataset_name": claim.dataset_name,
+                "split": claim.split,
+                "metric_name": claim.metric_name,
+                "metric_value": claim.metric_value,
+                "units": claim.units,
+                "source_citation": claim.citation.source_citation,
+                "confidence": claim.citation.confidence,
+            }
+            for claim in parsed_output.claims
+        ]
+
+        logger.info(
+            "extractor.run.complete paper_id=%s vector_store_id=%s claims=%s",
+            paper.id,
+            redact_vector_store_id(paper.vector_store_id),
+            len(claims_payload),
+        )
+        record_trace(guardrail_status)
+        yield _sse_event("stage", {"stage": "extract_complete"})
+        yield _sse_event("result", {"claims": claims_payload})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -1,22 +1,26 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Dict
 
 import pytest
 from fastapi.testclient import TestClient
+from openai import OpenAIError
 
 from app.agents.tooling import ToolUsageTracker
 from app.data import PaperCreate, PaperRecord, StorageArtifact
 from app.main import app
+import app.routers.papers as papers_router
 
 
 class FakeSupabaseDB:
     def __init__(self) -> None:
         self.records: Dict[str, PaperRecord] = {}
         self.by_checksum: Dict[str, PaperRecord] = {}
+        self.raise_on_insert = False
 
     def insert_paper(self, payload: PaperCreate) -> PaperRecord:
+        if self.raise_on_insert:
+            raise RuntimeError("DB insert failed")
         record = PaperRecord.model_validate(payload.model_dump())
         self.records[record.id] = record
         self.by_checksum[record.pdf_sha256] = record
@@ -33,10 +37,16 @@ class FakeStorage:
     def __init__(self) -> None:
         self.bucket_name = "papers"
         self.objects: set[str] = set()
+        self.deleted: list[str] = []
 
     def store_pdf(self, key: str, data: bytes) -> StorageArtifact:
         self.objects.add(key)
         return StorageArtifact(bucket=self.bucket_name, path=key)
+
+    def delete_object(self, key: str) -> bool:
+        self.deleted.append(key)
+        self.objects.discard(key)
+        return True
 
     def object_exists(self, key: str) -> bool:
         return key in self.objects
@@ -45,13 +55,19 @@ class FakeStorage:
 class FakeFileSearch:
     def __init__(self) -> None:
         self.vector_stores: set[str] = set()
+        self.fail_create = False
+        self.fail_add = False
 
     def create_vector_store(self, name: str) -> str:
+        if self.fail_create:
+            raise OpenAIError("vector store failure")
         identifier = f"vs_{len(self.vector_stores) + 1}"
         self.vector_stores.add(identifier)
         return identifier
 
     def add_pdf(self, vector_store_id: str, filename: str, data: bytes) -> str:
+        if self.fail_add:
+            raise OpenAIError("add pdf failure")
         return f"file_{vector_store_id}"
 
     def vector_store_exists(self, vector_store_id: str) -> bool:
@@ -70,7 +86,9 @@ def override_dependencies():
     app.dependency_overrides[dependencies.get_supabase_storage] = lambda: fake_storage
     app.dependency_overrides[dependencies.get_file_search_service] = lambda: fake_search
     app.dependency_overrides[dependencies.get_tool_tracker] = lambda: ToolUsageTracker()
-    yield
+
+    yield {"db": fake_db, "storage": fake_storage, "search": fake_search}
+
     app.dependency_overrides.clear()
 
 
@@ -111,3 +129,57 @@ def test_ingest_idempotent_returns_same_paper_id():
     assert first.status_code == 201
     assert second.status_code == 201
     assert first.json()["paper_id"] == second.json()["paper_id"]
+
+
+def test_ingest_bad_url_returns_typed_error(monkeypatch):
+    class DummyResponse:
+        def __init__(self, status_code: int = 404) -> None:
+            self.status_code = status_code
+            self.headers = {"content-type": "text/html"}
+            self.content = b""
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "DummyClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str) -> DummyResponse:
+            return DummyResponse()
+
+    monkeypatch.setattr(papers_router.httpx, "AsyncClient", DummyClient)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/papers/ingest",
+        params={"url": "https://example.com/missing.pdf"},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "E_FETCH_FAILED"
+    assert detail["remediation"]
+
+
+def test_ingest_filesearch_failure_returns_typed_error(override_dependencies):
+    override_dependencies["search"].fail_create = True
+    client = TestClient(app)
+    payload = {"file": ("paper.pdf", b"%PDF-1.4 mock", "application/pdf")}
+    response = client.post("/api/v1/papers/ingest", files=payload)
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] == "E_FILESEARCH_INDEX_FAILED"
+    assert len(override_dependencies["storage"].deleted) == 1
+
+
+def test_ingest_database_failure_triggers_cleanup(override_dependencies):
+    override_dependencies["db"].raise_on_insert = True
+    client = TestClient(app, raise_server_exceptions=False)
+    payload = {"file": ("paper.pdf", b"%PDF-1.4 mock", "application/pdf")}
+    response = client.post("/api/v1/papers/ingest", files=payload)
+    assert response.status_code == 500
+    assert len(override_dependencies["storage"].deleted) == 1
+    assert override_dependencies["storage"].deleted[0].endswith(".pdf")

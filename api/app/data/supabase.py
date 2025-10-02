@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -14,6 +15,8 @@ except Exception:  # pragma: no cover
         )
 
 from .models import PaperCreate, PaperRecord, StorageArtifact
+
+logger = logging.getLogger(__name__)
 
 
 class SupabaseClientFactory:
@@ -122,9 +125,24 @@ class SupabaseStorage:
         self._storage.upload(
             path=key,
             file=data,
-            options={"contentType": "application/pdf", "upsert": False},
+            file_options={"contentType": "application/pdf", "upsert": True},
         )
         return StorageArtifact(bucket=self._bucket_name, path=key)
+
+    def delete_object(self, key: str) -> bool:
+        """Best-effort removal of a storage object."""
+
+        try:
+            self._storage.remove([key])
+            return True
+        except Exception as exc:  # pragma: no cover - SDK-specific
+            logger.warning(
+                "storage.delete.failed bucket=%s key=%s error=%s",
+                self._bucket_name,
+                key,
+                exc,
+            )
+            return False
 
     def create_signed_url(self, key: str, expires_in: int = 3600) -> StorageArtifact:
         response = self._storage.create_signed_url(key, expires_in)
