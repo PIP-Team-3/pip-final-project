@@ -32,3 +32,20 @@ def test_sanitize_headers_casts_non_strings():
         assert isinstance(value, str)
     assert sanitized["upsert"] == "True"
     assert sanitized["retries"] == "2"
+
+
+def test_store_text_uses_utf8():
+    upload_mock = Mock()
+    bucket = SimpleNamespace(upload=upload_mock, list=Mock(return_value=[]))
+    storage_attr = SimpleNamespace(from_=Mock(return_value=bucket))
+    client = SimpleNamespace(storage=storage_attr)
+    storage = SupabaseStorage(client, "plans")
+
+    artifact = storage.store_text("plans/abc.txt", "hello")
+
+    upload_mock.assert_called_once()
+    kwargs = upload_mock.call_args.kwargs
+    assert kwargs["path"] == "plans/abc.txt"
+    assert kwargs["file"] == b"hello"
+    assert kwargs["file_options"] == {"contentType": "text/plain"}
+    assert artifact.path == "plans/abc.txt"

@@ -15,7 +15,16 @@ except Exception:  # pragma: no cover
             "The 'supabase' package is required to use SupabaseStorage/SupabaseDatabase"
         )
 
-from .models import PaperCreate, PaperRecord, PlanCreate, PlanRecord, StorageArtifact
+from .models import (
+    PaperCreate,
+    PaperRecord,
+    PlanCreate,
+    PlanRecord,
+    RunCreate,
+    RunEventCreate,
+    RunRecord,
+    StorageArtifact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +126,87 @@ class SupabaseDatabase:
             return None
         return PaperRecord.model_validate(data[0])
 
+
+    def get_plan(self, plan_id: str) -> Optional[PlanRecord]:
+        try:
+            response = (
+                self._client.table("plans")
+                .select("*")
+                .eq("id", plan_id)
+                .single()
+                .execute()
+            )
+        except Exception:
+            return None
+        data = getattr(response, "data", None)
+        if not data:
+            return None
+        return PlanRecord.model_validate(data)
+
+    def set_plan_env_hash(self, plan_id: str, env_hash: str) -> PlanRecord:
+        payload = {
+            "env_hash": env_hash,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        response = (
+            self._client.table("plans")
+            .update(payload)
+            .eq("id", plan_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if not data:
+            raise RuntimeError("Failed to update plan record with env hash")
+        return PlanRecord.model_validate(data)
+
+def insert_run(self, payload: RunCreate) -> RunRecord:
+    data = payload.model_dump(mode="json", exclude_none=False)
+    response = (
+        self._client.table("runs")
+        .insert(data)
+        .select("*")
+        .single()
+        .execute()
+    )
+    record = getattr(response, "data", None)
+    if not record:
+        raise RuntimeError("Failed to insert run record")
+    return RunRecord.model_validate(record)
+
+def update_run(self, run_id: str, *, status: str, finished_at: datetime | None = None, env_hash: str | None = None) -> RunRecord:
+    update_payload: dict[str, Any] = {"status": status}
+    if finished_at:
+        update_payload["finished_at"] = finished_at.isoformat()
+    if env_hash:
+        update_payload["env_hash"] = env_hash
+    response = (
+        self._client.table("runs")
+        .update(update_payload)
+        .eq("id", run_id)
+        .select("*")
+        .single()
+        .execute()
+    )
+    record = getattr(response, "data", None)
+    if not record:
+        raise RuntimeError("Failed to update run record")
+    return RunRecord.model_validate(record)
+
+def insert_run_event(self, payload: RunEventCreate) -> None:
+    data = payload.model_dump(mode="json")
+    self._client.table("run_events").insert(data).execute()
+
+def insert_run_series(self, run_id: str, metric: str, step: int, value: float) -> None:
+    data = {
+        "run_id": run_id,
+        "metric": metric,
+        "step": step,
+        "value": value,
+    }
+    self._client.table("run_series").insert(data).execute()
+
     def delete_paper(self, paper_id: str) -> int:
         response = (
             self._client.table("papers")
@@ -160,25 +250,16 @@ class SupabaseStorage:
     def bucket_name(self) -> str:
         return self._bucket_name
 
-    def store_pdf(self, key: str, data: bytes) -> StorageArtifact:
-        headers = sanitize_headers({"contentType": "application/pdf"})
+    def store_asset(self, key: str, data: bytes, content_type: str) -> StorageArtifact:
+        headers = sanitize_headers({"contentType": content_type})
         self._storage.upload(path=key, file=data, file_options=headers)
         return StorageArtifact(bucket=self._bucket_name, path=key)
 
-    def delete_object(self, key: str) -> bool:
-        """Best-effort removal of a storage object."""
+    def store_text(self, key: str, text: str, content_type: str = "text/plain") -> StorageArtifact:
+        return self.store_asset(key, text.encode("utf-8"), content_type)
 
-        try:
-            self._storage.remove([key])
-            return True
-        except Exception as exc:  # pragma: no cover - SDK-specific
-            logger.warning(
-                "storage.delete.failed bucket=%s key=%s error=%s",
-                self._bucket_name,
-                key,
-                exc,
-            )
-            return False
+    def store_pdf(self, key: str, data: bytes) -> StorageArtifact:
+        return self.store_asset(key, data, "application/pdf")
 
     def create_signed_url(self, key: str, expires_in: int = 3600) -> StorageArtifact:
         response = self._storage.create_signed_url(key, expires_in)

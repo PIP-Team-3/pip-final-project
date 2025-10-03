@@ -61,7 +61,40 @@ class PlanRecord(PlanCreate):
     model_config = {
         "extra": "ignore",
     }
-__all__ = ["PaperCreate", "PaperRecord", "PlanCreate", "PlanRecord", "StorageArtifact"]
+
+
+class RunCreate(BaseModel):
+    id: str
+    plan_id: str
+    status: str
+    env_hash: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+
+class RunRecord(RunCreate):
+    model_config = {
+        "extra": "ignore",
+    }
+
+
+class RunEventCreate(BaseModel):
+    id: str
+    run_id: str
+    ts: datetime
+    type: str
+    payload: dict[str, Any]
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+__all__ = ["PaperCreate", "PaperRecord", "PlanCreate", "PlanRecord", "RunCreate", "RunRecord", "RunEventCreate", "StorageArtifact"]
 
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -17,9 +17,10 @@ from ..agents.runtime import build_tool_payloads
 from ..agents.tooling import ToolUsageTracker
 from ..config.llm import agent_defaults, get_client, traced_run, traced_subspan
 from ..config.settings import get_settings
-from ..data.models import PlanCreate
+from ..data.models import PlanCreate, StorageArtifact
+from ..materialize.notebook import build_notebook_bytes, build_requirements
 from ..data.supabase import is_valid_uuid
-from ..dependencies import get_supabase_db, get_tool_tracker
+from ..dependencies import get_supabase_db, get_supabase_storage, get_tool_tracker
 from ..schemas.plan_v1_1 import PlanDocumentV11
 from ..tools.errors import ToolUsagePolicyError
 from ..utils.redaction import redact_vector_store_id
@@ -37,10 +38,14 @@ ERROR_PLAN_NO_OUTPUT = "E_PLAN_NO_OUTPUT"
 ERROR_PLAN_SCHEMA_INVALID = "E_PLAN_SCHEMA_INVALID"
 ERROR_PLAN_GUARDRAIL = "E_PLAN_GUARDRAIL_FAILED"
 PLAN_FILE_SEARCH_RESULTS = 8
+ERROR_PLAN_NOT_FOUND = "E_PLAN_NOT_FOUND"
+ERROR_PLAN_ASSET_MISSING = "E_PLAN_ASSET_MISSING"
 DEFAULT_PLAN_STATUS = "draft"
+MATERIALIZE_SIGNED_URL_TTL = 120
 
 
 router = APIRouter(prefix="/api/v1/papers", tags=["plans"])
+plan_assets_router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
 
 
 class PlannerClaim(BaseModel):
@@ -62,6 +67,18 @@ class PlannerResponse(BaseModel):
     plan_id: str
     plan_version: str
     plan_json: PlanDocumentV11
+
+
+class MaterializeResponse(BaseModel):
+    notebook_asset_path: str
+    env_asset_path: str
+    env_hash: str
+
+
+class PlanAssetsResponse(BaseModel):
+    notebook_signed_url: str
+    env_signed_url: str
+    expires_at: datetime
 
 
 @router.post("/{paper_id}/plan", response_model=PlannerResponse)
@@ -354,3 +371,104 @@ async def create_plan(
 
 
 
+
+
+@plan_assets_router.post("/{plan_id}/materialize", response_model=MaterializeResponse)
+async def materialize_plan_assets(
+    plan_id: str,
+    db=Depends(get_supabase_db),
+    storage=Depends(get_supabase_storage),
+):
+    plan_record = db.get_plan(plan_id)
+    if not plan_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": ERROR_PLAN_NOT_FOUND,
+                "message": "Plan not found",
+                "remediation": "Create the plan before materializing assets",
+            },
+        )
+    try:
+        plan = PlanDocumentV11.model_validate(plan_record.plan_json)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": ERROR_PLAN_SCHEMA_INVALID,
+                "message": "Stored plan payload failed validation",
+                "errors": exc.errors()[:3],
+            },
+        ) from exc
+
+    notebook_key = f"plans/{plan_id}/notebook.ipynb"
+    env_key = f"plans/{plan_id}/requirements.txt"
+
+    with traced_run("p2n.materialize") as span:
+        with traced_subspan(span, "p2n.materialize.codegen"):
+            notebook_bytes = build_notebook_bytes(plan, plan_id)
+            requirements_text, env_hash = build_requirements(plan)
+        with traced_subspan(span, "p2n.materialize.persist"):
+            storage.store_asset(notebook_key, notebook_bytes, "application/x-ipynb+json")
+            storage.store_text(env_key, requirements_text, "text/plain")
+        db.set_plan_env_hash(plan_id, env_hash)
+
+    logger.info(
+        "plan.materialize.complete plan_id=%s notebook=%s env=%s env_hash=%s",
+        plan_id,
+        notebook_key,
+        env_key,
+        env_hash[:8] + "***",
+    )
+
+    return MaterializeResponse(
+        notebook_asset_path=notebook_key,
+        env_asset_path=env_key,
+        env_hash=env_hash,
+    )
+
+
+@plan_assets_router.get("/{plan_id}/assets", response_model=PlanAssetsResponse)
+async def get_plan_assets(
+    plan_id: str,
+    db=Depends(get_supabase_db),
+    storage=Depends(get_supabase_storage),
+):
+    plan_record = db.get_plan(plan_id)
+    if not plan_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": ERROR_PLAN_NOT_FOUND,
+                "message": "Plan not found",
+                "remediation": "Create and materialize the plan before verifying assets",
+            },
+        )
+
+    notebook_key = f"plans/{plan_id}/notebook.ipynb"
+    env_key = f"plans/{plan_id}/requirements.txt"
+    missing = [key for key in (notebook_key, env_key) if not storage.object_exists(key)]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": ERROR_PLAN_ASSET_MISSING,
+                "message": "Plan assets have not been materialized",
+                "missing": missing,
+            },
+        )
+
+    ttl = MATERIALIZE_SIGNED_URL_TTL
+    notebook_artifact = storage.create_signed_url(notebook_key, expires_in=ttl)
+    env_artifact = storage.create_signed_url(env_key, expires_in=ttl)
+
+    def _safe_url(artifact: StorageArtifact) -> str:
+        return artifact.signed_url or ""
+
+    expires_at = notebook_artifact.expires_at or env_artifact.expires_at or (datetime.now(timezone.utc) + timedelta(seconds=ttl))
+
+    return PlanAssetsResponse(
+        notebook_signed_url=_safe_url(notebook_artifact),
+        env_signed_url=_safe_url(env_artifact),
+        expires_at=expires_at,
+    )
