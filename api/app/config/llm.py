@@ -79,3 +79,23 @@ def traced_run(name: str) -> Iterator[Any]:
     else:
         # Fallback to a no-op when the SDK does not yet expose tracing helpers.
         yield None
+
+@contextmanager
+def traced_subspan(parent_span: Any, name: str) -> Iterator[Any]:
+    """Start a child span when tracing is enabled.
+
+    When tracing is disabled or the SDK does not expose span helpers, this
+    context manager becomes a no-op so callers can unconditionally wrap
+    sensitive sections.
+    """
+
+    if parent_span is None:
+        yield None
+        return
+
+    start_span = getattr(parent_span, "start_span", None)
+    if callable(start_span):
+        with start_span(name=name) as child:
+            yield child
+    else:
+        yield None

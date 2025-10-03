@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
@@ -27,44 +27,65 @@ class ExtractorOutput:
 
 
 @dataclass(slots=True)
-class PlanTarget:
-    dataset: str
+class PlanJustification:
+    quote: str
+    citation: str
+
+
+@dataclass(slots=True)
+class PlanDataset:
+    name: str
     split: str
-    metric: str
-    goal_value: float | None
-    justifications: list[str] = field(default_factory=list)
+    filters: list[str] = field(default_factory=list)
+    notes: str | None = None
 
 
 @dataclass(slots=True)
-class PlanResources:
-    datasets: list[str]
-    licenses: list[str]
+class PlanModel:
+    name: str
+    variant: str | None = None
+    size_category: str = "tiny"
+    parameters: dict[str, float] | None = None
 
 
 @dataclass(slots=True)
-class PlanRunConfig:
+class PlanConfig:
+    framework: str
     seed: int
-    model: str
     epochs: int
     batch_size: int
+    learning_rate: float
+    optimizer: str
 
 
 @dataclass(slots=True)
-class PlanArtifacts:
-    metrics: list[str]
-    visualizations: list[str]
-    explainability: list[str]
+class PlanMetric:
+    name: str
+    split: str
+    goal: float | None
+    tolerance: float | None = None
+    direction: str = "maximize"
+
+
+@dataclass(slots=True)
+class PlanPolicy:
+    budget_minutes: int
+    max_retries: int = 1
 
 
 @dataclass(slots=True)
 class PlannerOutput:
     version: str
-    targets: list[PlanTarget]
-    resources: PlanResources
-    run: PlanRunConfig
-    artifacts: PlanArtifacts
-    estimated_runtime_minutes: float
-    license_compliant: bool
+    dataset: PlanDataset
+    model: PlanModel
+    config: PlanConfig
+    metrics: list[PlanMetric] = field(default_factory=list)
+    visualizations: list[str] = field(default_factory=list)
+    explain: list[str] = field(default_factory=list)
+    justifications: dict[str, PlanJustification] = field(default_factory=dict)
+    estimated_runtime_minutes: float = 0.0
+    license_compliant: bool = True
+    policy: PlanPolicy | None = None
 
 
 @dataclass(slots=True)

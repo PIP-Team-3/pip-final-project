@@ -167,12 +167,19 @@ def test_extractor_stream_happy_path(extractor_setup, monkeypatch):
     assert result_event["event"] == "result"
     claims = result_event["data"]["claims"]
     assert len(claims) == 1
-    assert claims[0]["source_citation"] == "Page 3"
+    assert claims[0]["citation"] == "Page 3"
     assert claims[0]["confidence"] == 0.9
     assert fake_client.responses.last_kwargs
-    tools = fake_client.responses.last_kwargs.get("tools", [])
+    payload = fake_client.responses.last_kwargs
+    tools = payload.get("tools", [])
     assert tools and tools[0]["type"] == "file_search"
     assert tools[0]["vector_store_ids"] == [extractor_setup["paper"].vector_store_id]
+    assert tools[0]["max_num_results"] == 8
+    attachments = payload.get("attachments", [])
+    assert attachments
+    file_search_meta = attachments[0].get("file_search", {})
+    assert file_search_meta.get("vector_store_ids") == [extractor_setup["paper"].vector_store_id]
+    assert file_search_meta.get("max_num_results") == 8
 
 
 def test_extractor_guardrail_low_confidence(extractor_setup, monkeypatch):
@@ -246,5 +253,5 @@ def test_extractor_policy_cap_error(monkeypatch):
     app.dependency_overrides.clear()
 
     assert sse_events[-1]["event"] == "error"
-    assert sse_events[-1]["data"]["code"] == "POLICY_CAP_EXCEEDED"
+    assert sse_events[-1]["data"]["code"] == "E_POLICY_CAP_EXCEEDED"
     assert not any(event["data"].get("stage") == "extract_complete" for event in sse_events if event["event"] == "stage_update")

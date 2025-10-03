@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover
             "The 'supabase' package is required to use SupabaseStorage/SupabaseDatabase"
         )
 
-from .models import PaperCreate, PaperRecord, StorageArtifact
+from .models import PaperCreate, PaperRecord, PlanCreate, PlanRecord, StorageArtifact
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,20 @@ class SupabaseDatabase:
         if not result:
             raise RuntimeError("Failed to insert paper record")
         return PaperRecord.model_validate(result)
+    def insert_plan(self, payload: PlanCreate) -> PlanRecord:
+        data = payload.model_dump(mode="json", exclude_none=False)
+        created_by = data.get("created_by")
+        if not is_valid_uuid(created_by):
+            data.pop("created_by", None)
+        response = self._client.table("plans").insert(data).execute()
+        result = getattr(response, "data", None)
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if not result:
+            raise RuntimeError("Failed to insert plan record")
+        return PlanRecord.model_validate(result)
+
+
 
     def get_paper(self, paper_id: str) -> Optional[PaperRecord]:
         response = (
@@ -190,3 +204,4 @@ __all__ = [
     "sanitize_headers",
     "is_valid_uuid",
 ]
+

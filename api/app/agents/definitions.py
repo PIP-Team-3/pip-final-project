@@ -67,6 +67,7 @@ def _build_extractor() -> AgentDefinition:
     )
 
 
+
 # Planner -------------------------------------------------------------------
 
 
@@ -87,12 +88,17 @@ def _planner_input_guard(payload: Any) -> tuple[bool, str | None]:
 def _planner_output_guard(payload: Any) -> tuple[bool, str | None]:
     if not isinstance(payload, PlannerOutput):
         return False, "Payload must be a PlannerOutput"
+    if payload.version != "1.1":
+        return False, "Planner must emit version 1.1 documents"
     if payload.estimated_runtime_minutes > 20:
         return False, "Plan runtime exceeds 20 minute CPU cap"
     if not payload.license_compliant:
         return False, "Plan references a dataset with a blocked license"
-    if not payload.targets:
-        return False, "Plan must define at least one target"
+    if not payload.metrics:
+        return False, "Plan must define at least one metric target"
+    required_justifications = {"dataset", "model", "config"}
+    if not required_justifications.issubset(payload.justifications.keys()):
+        return False, "Planner must justify dataset, model, and config choices"
     return True, None
 
 
@@ -101,17 +107,19 @@ def _build_planner() -> AgentDefinition:
         role=AgentRole.PLANNER,
         summary="Drafts a CPU-only reproduction plan that preserves metric intent.",
         system_prompt=(
-            "Produce a deterministic plan with ≤20 minute runtime, citing source quotes."
+            "Produce a deterministic Plan JSON v1.1 under 20 CPU minutes. "
+            "Include dataset, model, config, metrics, visualizations, explain steps, and a justifications map"
+            " with verbatim paper quotes."
         ),
         output_type=PlannerOutput,
         input_guardrail=Guardrail(
             name="planner_input_guard",
-            description="Planner requires validated claims and policy budget ≤20 min.",
+            description="Planner requires validated claims and policy budget <=20 min.",
             check=_planner_input_guard,
         ),
         output_guardrail=Guardrail(
             name="planner_output_guard",
-            description="Plan must honor runtime and license guardrails.",
+            description="Plan must honor runtime, licensing, and justification guardrails.",
             check=_planner_output_guard,
         ),
         hosted_tools=("file_search", "web_search"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -39,4 +39,29 @@ class StorageArtifact(BaseModel):
     expires_at: Optional[datetime] = None
 
 
-__all__ = ["PaperCreate", "PaperRecord", "StorageArtifact"]
+
+class PlanCreate(BaseModel):
+    id: str
+    paper_id: str
+    version: str
+    plan_json: dict[str, Any]
+    env_hash: Optional[str] = None
+    compute_budget_minutes: Optional[int] = None
+    status: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+
+class PlanRecord(PlanCreate):
+    model_config = {
+        "extra": "ignore",
+    }
+__all__ = ["PaperCreate", "PaperRecord", "PlanCreate", "PlanRecord", "StorageArtifact"]
+
+
+

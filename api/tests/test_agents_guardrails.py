@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from app.agents import (
     AgentRole,
@@ -11,16 +11,21 @@ from app.agents.types import (
     EnvSpecOutput,
     ExtractedClaim,
     ExtractorOutput,
+    KidExplainerOutput,
+    PlanConfig,
+    PlanDataset,
+    PlanJustification,
+    PlanMetric,
+    PlanModel,
+    PlanPolicy,
+    PlannerOutput,
     NotebookCell,
     PackagePin,
-    PlannerOutput,
-    PlanArtifacts,
-    PlanResources,
-    PlanRunConfig,
-    PlanTarget,
     StoryPage,
-    KidExplainerOutput,
 )
+
+
+
 
 
 @pytest.mark.parametrize(
@@ -45,25 +50,24 @@ from app.agents.types import (
         (
             AgentRole.PLANNER,
             PlannerOutput(
-                version="1.1",
-                targets=[
-                    PlanTarget(
-                        dataset="CIFAR-10",
-                        split="test",
-                        metric="accuracy",
-                        goal_value=0.9,
-                        justifications=["Section 3"]
-                    )
-                ],
-                resources=PlanResources(datasets=["CIFAR-10"], licenses=["mit"]),
-                run=PlanRunConfig(seed=42, model="resnet18", epochs=50, batch_size=32),
-                artifacts=PlanArtifacts(
-                    metrics=["accuracy"],
-                    visualizations=["confusion_matrix"],
-                    explainability=["saliency"],
+                version="1.0",
+                dataset=PlanDataset(name="CIFAR-10", split="test"),
+                model=PlanModel(name="resnet18"),
+                config=PlanConfig(
+                    framework="torch",
+                    seed=42,
+                    epochs=25,
+                    batch_size=32,
+                    learning_rate=0.001,
+                    optimizer="adam",
                 ),
+                metrics=[],
+                visualizations=["confusion_matrix"],
+                explain=["summarize results"],
+                justifications={},
                 estimated_runtime_minutes=25.0,
                 license_compliant=True,
+                policy=PlanPolicy(budget_minutes=25),
             ),
         ),
         (
@@ -105,3 +109,5 @@ def test_guardrail_tripwires(role, output):
     agent = get_agent(role)
     with pytest.raises(OutputGuardrailTripwireTriggered):
         agent.validate_output(output)
+
+

@@ -17,7 +17,7 @@ from pydantic import BaseModel, HttpUrl
 from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
 from ..agents.runtime import build_tool_payloads
 from ..agents.tooling import ToolUsageTracker
-from ..config.llm import agent_defaults, get_client, traced_run
+from ..config.llm import agent_defaults, get_client, traced_run, traced_subspan
 from ..data import PaperCreate
 from ..config.settings import get_settings
 from ..data.supabase import is_valid_uuid
@@ -46,7 +46,8 @@ ERROR_LOW_CONFIDENCE = "E_EXTRACT_LOW_CONFIDENCE"
 ERROR_RUN_FAILED = "E_EXTRACT_RUN_FAILED"
 ERROR_NO_OUTPUT = "E_EXTRACT_NO_OUTPUT"
 ERROR_OPENAI = "E_EXTRACT_OPENAI_ERROR"
-POLICY_CAP_CODE = "POLICY_CAP_EXCEEDED"
+POLICY_CAP_CODE = "E_POLICY_CAP_EXCEEDED"
+FILE_SEARCH_MAX_RESULTS = 8
 
 router = APIRouter(prefix="/api/v1/papers", tags=["papers"])
 
@@ -128,7 +129,7 @@ async def ingest_paper(
     file_search: FileSearchService = Depends(get_file_search_service),
 ):
     settings = get_settings()
-    fallback_created_by = (
+    fallback_created_by: Optional[str] = (
         settings.p2n_dev_user_id if is_valid_uuid(settings.p2n_dev_user_id) else None
     )
 
@@ -138,9 +139,8 @@ async def ingest_paper(
     elif created_by:
         logger.info("ingest.created_by.invalid provided value omitted")
 
-    if not effective_created_by:
+    if not created_by and not effective_created_by:
         effective_created_by = fallback_created_by
-
     created_by_present = bool(effective_created_by)
     logger.info("ingest.request created_by_present=%s", created_by_present)
 
@@ -320,7 +320,11 @@ async def run_extractor(
     tools: list[Any] = []
     for payload in tool_payloads:
         if isinstance(payload, dict) and payload.get("type") == "file_search":
-            tool = ResponsesFileSearchTool(type="file_search", vector_store_ids=[paper.vector_store_id])
+            tool = ResponsesFileSearchTool(
+                type="file_search",
+                vector_store_ids=[paper.vector_store_id],
+                max_num_results=FILE_SEARCH_MAX_RESULTS,
+            )
             tools.append(tool.model_dump(mode="json"))
         else:
             tools.append(payload)
@@ -329,6 +333,7 @@ async def run_extractor(
         {
             "file_search": {
                 "vector_store_ids": [paper.vector_store_id],
+                "max_num_results": FILE_SEARCH_MAX_RESULTS,
             }
         }
     ]
@@ -390,25 +395,26 @@ async def run_extractor(
                             continue
 
                         if event_type == FILE_SEARCH_STAGE_EVENT:
-                            try:
-                                tracker.record_call("file_search")
-                            except ToolUsagePolicyError as exc:
-                                logger.warning(
-                                    "extractor.policy.cap_exceeded paper_id=%s vector_store_id=%s",
-                                    paper.id,
-                                    redact_vector_store_id(paper.vector_store_id),
-                                )
-                                record_trace("policy.cap.exceeded", POLICY_CAP_CODE)
-                                yield _sse_event(
-                                    "error",
-                                    {
-                                        "code": POLICY_CAP_CODE,
-                                        "message": str(exc),
-                                        "remediation": "Reduce File Search usage or adjust the configured cap",
-                                    },
-                                )
-                                return
-                            file_search_calls += 1
+                            with traced_subspan(span, "p2n.extractor.tool.file_search"):
+                                try:
+                                    tracker.record_call("file_search")
+                                except ToolUsagePolicyError as exc:
+                                    logger.warning(
+                                        "extractor.policy.cap_exceeded paper_id=%s vector_store_id=%s",
+                                        paper.id,
+                                        redact_vector_store_id(paper.vector_store_id),
+                                    )
+                                    record_trace("policy.cap.exceeded", POLICY_CAP_CODE)
+                                    yield _sse_event(
+                                        "error",
+                                        {
+                                            "code": POLICY_CAP_CODE,
+                                            "message": str(exc),
+                                            "remediation": "Reduce File Search usage or adjust the configured cap",
+                                        },
+                                    )
+                                    return
+                                file_search_calls += 1
                             yield _sse_event("stage_update", {"stage": "file_search_call"})
                             continue
 
@@ -536,7 +542,8 @@ async def run_extractor(
             return
 
         try:
-            agent.output_guardrail.enforce(parsed_output)
+            with traced_subspan(span, "p2n.extractor.guardrail.enforce"):
+                agent.output_guardrail.enforce(parsed_output)
         except OutputGuardrailTripwireTriggered as exc:
             logger.warning(
                 "extractor.guardrail.failed paper_id=%s vector_store_id=%s reason=%s",
@@ -550,24 +557,25 @@ async def run_extractor(
                 {
                     "code": ERROR_LOW_CONFIDENCE,
                     "message": "Extractor guardrail rejected the claims",
-                    "remediation": "Review missing citations or low confidence claims and retry",
+                    "remediation": "Use manual claim editor to supply citations or boost confidence",
                 },
             )
             return
 
         guardrail_status = "passed"
-        claims_payload = [
-            {
-                "dataset_name": claim.dataset_name,
-                "split": claim.split,
-                "metric_name": claim.metric_name,
-                "metric_value": claim.metric_value,
-                "units": claim.units,
-                "source_citation": claim.citation.source_citation,
-                "confidence": claim.citation.confidence,
-            }
-            for claim in parsed_output.claims
-        ]
+        with traced_subspan(span, "p2n.extractor.validation.output"):
+            claims_payload = [
+                {
+                    "dataset": claim.dataset_name,
+                    "split": claim.split,
+                    "metric": claim.metric_name,
+                    "value": claim.metric_value,
+                    "units": claim.units,
+                    "citation": claim.citation.source_citation,
+                    "confidence": claim.citation.confidence,
+                }
+                for claim in parsed_output.claims
+            ]
 
         logger.info(
             "extractor.run.complete paper_id=%s vector_store_id=%s claims=%s",
@@ -580,6 +588,7 @@ async def run_extractor(
         yield _sse_event("result", {"claims": claims_payload})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 
 

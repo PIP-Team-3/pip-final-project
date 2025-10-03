@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.data.models import PaperCreate
+from app.data.models import PaperCreate, PlanCreate
 from app.data.supabase import SupabaseDatabase, is_valid_uuid
 
 
@@ -25,6 +25,23 @@ def _paper_payload(created_by: str | None = _VALID_UUID) -> PaperCreate:
         created_at=now,
         updated_at=now,
     )
+
+def _plan_payload(created_by: str | None = _VALID_UUID) -> PlanCreate:
+    now = datetime.now(timezone.utc)
+    return PlanCreate(
+        id="plan-123",
+        paper_id="paper-123",
+        version="1.1",
+        plan_json={"version": "1.1"},
+        env_hash=None,
+        compute_budget_minutes=15,
+        status="draft",
+        created_by=created_by,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 
 
 class _FakeInsertQuery:
@@ -88,3 +105,31 @@ def test_insert_paper_omits_invalid_created_by():
     assert client.last_query is not None
     assert "created_by" not in client.last_query.last_payload
     assert not is_valid_uuid(record.created_by)
+
+
+
+def test_insert_plan_handles_list_response():
+    payload = _plan_payload()
+    response_row = payload.model_dump(mode="json")
+    client = _FakeClient([response_row])
+    db = SupabaseDatabase(client)  # type: ignore[arg-type]
+
+    record = db.insert_plan(payload)
+
+    assert client.last_table == "plans"
+    assert client.last_query is not None
+    assert client.last_query.last_payload["created_by"] == _VALID_UUID
+    assert record.version == payload.version
+
+
+def test_insert_plan_omits_invalid_created_by():
+    payload = _plan_payload(created_by="system")
+    response_row = payload.model_dump(mode="json")
+    client = _FakeClient(response_row)
+    db = SupabaseDatabase(client)  # type: ignore[arg-type]
+
+    record = db.insert_plan(payload)
+
+    assert client.last_query is not None
+    assert "created_by" not in client.last_query.last_payload
+    assert record.compute_budget_minutes == payload.compute_budget_minutes

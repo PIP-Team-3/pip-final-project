@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
@@ -48,8 +49,12 @@ def _tool_status() -> Dict[str, bool]:
 
 
 def config_snapshot() -> ConfigHealth:
+    get_settings.cache_clear()
     settings = get_settings()
-    presence = {attr: bool(getattr(settings, attr)) for attr in _ENV_FIELD_MAP}
+    presence = {
+        attr: bool(os.getenv(_ENV_FIELD_MAP[attr]))
+        for attr in _ENV_FIELD_MAP
+    }
     missing = [
         _ENV_FIELD_MAP[attr]
         for attr in _CORE_KEYS
@@ -82,7 +87,10 @@ def ensure_startup_config() -> None:
     if health.missing_env_keys:
         message = "Missing required environment variables: " + ", ".join(health.missing_env_keys)
         if settings.allow_missing_supabase:
-            logger.warning("Env doctor continuing despite missing keys: %s", ", ".join(health.missing_env_keys))
+            logger.warning(
+                "Env doctor continuing despite missing keys: %s",
+                ", ".join(health.missing_env_keys),
+            )
         else:
             logger.error("Env doctor fatal configuration error: %s", message)
             raise RuntimeError(message)
