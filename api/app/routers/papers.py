@@ -11,7 +11,6 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from openai import OpenAIError
-from openai.types.responses import FileSearchTool as ResponsesFileSearchTool
 from pydantic import BaseModel, HttpUrl
 
 from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
@@ -317,30 +316,22 @@ async def run_extractor(
     agent = get_agent(AgentRole.EXTRACTOR)
     client = get_client()
     tool_payloads = build_tool_payloads(agent)
-    tools: list[Any] = []
-    for payload in tool_payloads:
-        if isinstance(payload, dict) and payload.get("type") == "file_search":
-            tool = ResponsesFileSearchTool(
-                type="file_search",
-                vector_store_ids=[paper.vector_store_id],
-                max_num_results=FILE_SEARCH_MAX_RESULTS,
-            )
-            tools.append(tool.model_dump(mode="json"))
-        else:
-            tools.append(payload)
+    tools = list(tool_payloads)
 
-    attachments = [
-        {
-            "file_search": {
-                "vector_store_ids": [paper.vector_store_id],
-                "max_num_results": FILE_SEARCH_MAX_RESULTS,
-            }
-        }
-    ]
+    # Ensure file_search tool exists with max_num_results
+    has_file_search = False
+    for i, tool in enumerate(tools):
+        if isinstance(tool, dict) and tool.get("type") == "file_search":
+            tools[i] = {"type": "file_search", "max_num_results": FILE_SEARCH_MAX_RESULTS}
+            has_file_search = True
+            break
+
+    if not has_file_search:
+        tools.insert(0, {"type": "file_search", "max_num_results": FILE_SEARCH_MAX_RESULTS})
 
     system_content = {
         "role": "system",
-        "content": [{"type": "text", "text": agent.system_prompt}],
+        "content": [{"type": "input_text", "text": agent.system_prompt}],
     }
     user_payload = {
         "role": "user",
@@ -354,6 +345,12 @@ async def run_extractor(
                         "vector_store_id": paper.vector_store_id,
                     }
                 ),
+            }
+        ],
+        "attachments": [
+            {
+                "vector_store_id": paper.vector_store_id,
+                "tools": [{"type": "file_search"}],
             }
         ],
     }
@@ -381,7 +378,6 @@ async def run_extractor(
                     model=agent_defaults.model,
                     input=[system_content, user_payload],
                     tools=tools,
-                    attachments=attachments,
                     temperature=agent_defaults.temperature,
                     max_output_tokens=agent_defaults.max_output_tokens,
                     text_format=agent.output_type,

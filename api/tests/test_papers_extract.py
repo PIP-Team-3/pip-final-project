@@ -172,14 +172,30 @@ def test_extractor_stream_happy_path(extractor_setup, monkeypatch):
     assert fake_client.responses.last_kwargs
     payload = fake_client.responses.last_kwargs
     tools = payload.get("tools", [])
-    assert tools and tools[0]["type"] == "file_search"
-    assert tools[0]["vector_store_ids"] == [extractor_setup["paper"].vector_store_id]
-    assert tools[0]["max_num_results"] == 8
-    attachments = payload.get("attachments", [])
+    fs_tool = next(
+        (tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "file_search"),
+        None,
+    )
+    assert fs_tool is not None
+    assert "vector_store_ids" not in fs_tool
+
+    messages = payload.get("input", [])
+    assert messages
+    system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
+    assert system_message is not None
+    system_content = system_message.get("content", [])
+    assert system_content and system_content[0].get("type") == "input_text"
+
+    user_message = next((msg for msg in messages if msg.get("role") == "user"), None)
+    assert user_message is not None
+    attachments = user_message.get("attachments", [])
     assert attachments
-    file_search_meta = attachments[0].get("file_search", {})
-    assert file_search_meta.get("vector_store_ids") == [extractor_setup["paper"].vector_store_id]
-    assert file_search_meta.get("max_num_results") == 8
+    assert attachments[0]["vector_store_id"] == extractor_setup["paper"].vector_store_id
+    attachment_tools = attachments[0].get("tools", [])
+    assert attachment_tools and attachment_tools[0]["type"] == "file_search"
+    # max_num_results should be in top-level tools, not attachment tools (Responses API spec)
+    assert fs_tool.get("max_num_results") == 8
+    assert "attachments" not in payload
 
 
 def test_extractor_guardrail_low_confidence(extractor_setup, monkeypatch):

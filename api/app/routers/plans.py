@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from openai import OpenAIError
-from openai.types.responses import FileSearchTool as ResponsesFileSearchTool
 from pydantic import BaseModel, Field, ValidationError
 
 from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
@@ -102,31 +101,22 @@ async def create_plan(
     agent = get_agent(AgentRole.PLANNER)
     client = get_client()
     tool_payloads = build_tool_payloads(agent)
+    tools = list(tool_payloads)
 
-    tools: list[Any] = []
-    for tool in tool_payloads:
+    # Ensure file_search tool exists with max_num_results
+    has_file_search = False
+    for i, tool in enumerate(tools):
         if isinstance(tool, dict) and tool.get("type") == "file_search":
-            fs_tool = ResponsesFileSearchTool(
-                type="file_search",
-                vector_store_ids=[paper.vector_store_id],
-                max_num_results=PLAN_FILE_SEARCH_RESULTS,
-            )
-            tools.append(fs_tool.model_dump(mode="json"))
-        else:
-            tools.append(tool)
+            tools[i] = {"type": "file_search", "max_num_results": PLAN_FILE_SEARCH_RESULTS}
+            has_file_search = True
+            break
 
-    attachments = [
-        {
-            "file_search": {
-                "vector_store_ids": [paper.vector_store_id],
-                "max_num_results": PLAN_FILE_SEARCH_RESULTS,
-            }
-        }
-    ]
+    if not has_file_search:
+        tools.insert(0, {"type": "file_search", "max_num_results": PLAN_FILE_SEARCH_RESULTS})
 
     system_content = {
         "role": "system",
-        "content": [{"type": "text", "text": agent.system_prompt}],
+        "content": [{"type": "input_text", "text": agent.system_prompt}],
     }
 
     policy_budget = min(payload.budget_minutes, 20)
@@ -146,6 +136,12 @@ async def create_plan(
                         "policy": {"budget_minutes": policy_budget},
                     }
                 ),
+            }
+        ],
+        "attachments": [
+            {
+                "vector_store_id": paper.vector_store_id,
+                "tools": [{"type": "file_search"}],
             }
         ],
     }
@@ -171,7 +167,6 @@ async def create_plan(
                 model=agent_defaults.model,
                 input=[system_content, user_payload],
                 tools=tools,
-                attachments=attachments,
                 temperature=agent_defaults.temperature,
                 max_output_tokens=agent_defaults.max_output_tokens,
                 text_format=agent.output_type,

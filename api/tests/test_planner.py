@@ -187,14 +187,37 @@ def test_planner_creates_plan(monkeypatch, planner_setup):
 
     # Ensure vector store attachments propagated
     assert fake_client.responses.last_kwargs is not None
-    tools = fake_client.responses.last_kwargs.get("tools", [])
-    assert tools and tools[0]["type"] == "file_search"
-    assert tools[0]["vector_store_ids"] == [planner_setup["paper"].vector_store_id]
-    assert tools[0]["max_num_results"] == PLAN_FILE_SEARCH_RESULTS
-    attachments = fake_client.responses.last_kwargs.get("attachments", [])
-    assert attachments and attachments[0]["file_search"]["vector_store_ids"] == [
-        planner_setup["paper"].vector_store_id
-    ]
+    request_kwargs = fake_client.responses.last_kwargs
+    tools = request_kwargs.get("tools", [])
+    fs_tool = next(
+        (tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "file_search"),
+        None,
+    )
+    assert fs_tool is not None
+    assert "vector_store_ids" not in fs_tool
+
+    input_messages = request_kwargs.get("input", [])
+    assert input_messages
+    system_message = next((msg for msg in input_messages if msg.get("role") == "system"), None)
+    assert system_message is not None
+    system_content = system_message.get("content", [])
+    assert system_content and system_content[0].get("type") == "input_text"
+
+    user_message = next((msg for msg in input_messages if msg.get("role") == "user"), None)
+    assert user_message is not None
+    attachments = user_message.get("attachments", [])
+    assert attachments
+    assert attachments[0]["vector_store_id"] == planner_setup["paper"].vector_store_id
+    attachment_tools = attachments[0].get("tools", [])
+    assert attachment_tools and attachment_tools[0]["type"] == "file_search"
+    # max_num_results should be in top-level tools, not attachment tools (Responses API spec)
+    fs_tool = next(
+        (tool for tool in request_kwargs.get("tools", []) if isinstance(tool, dict) and tool.get("type") == "file_search"),
+        None,
+    )
+    assert fs_tool is not None
+    assert fs_tool.get("max_num_results") == PLAN_FILE_SEARCH_RESULTS
+    assert "attachments" not in request_kwargs
 
     # Plan persisted
     inserted = planner_setup["db"].inserted_plan
