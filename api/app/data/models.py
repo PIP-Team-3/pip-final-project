@@ -39,7 +39,6 @@ class StorageArtifact(BaseModel):
     expires_at: Optional[datetime] = None
 
 
-
 class PlanCreate(BaseModel):
     id: str
     paper_id: str
@@ -66,11 +65,12 @@ class PlanRecord(PlanCreate):
 class RunCreate(BaseModel):
     id: str
     plan_id: str
+    paper_id: str
     status: str
     env_hash: str | None = None
-    started_at: datetime
-    finished_at: datetime | None = None
     created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
     model_config = {
         "extra": "ignore",
@@ -94,7 +94,35 @@ class RunEventCreate(BaseModel):
         "extra": "ignore",
     }
 
-__all__ = ["PaperCreate", "PaperRecord", "PlanCreate", "PlanRecord", "RunCreate", "RunRecord", "RunEventCreate", "StorageArtifact"]
+
+class StoryboardCreate(BaseModel):
+    id: str
+    paper_id: str
+    run_id: Optional[str] = None
+    storyboard_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {
+        "extra": "ignore",
+    }
 
 
+class StoryboardRecord(StoryboardCreate):
+    model_config = {
+        "extra": "ignore",
+    }
 
+
+__all__ = [
+    "PaperCreate",
+    "PaperRecord",
+    "PlanCreate",
+    "PlanRecord",
+    "RunCreate",
+    "RunRecord",
+    "RunEventCreate",
+    "StorageArtifact",
+    "StoryboardCreate",
+    "StoryboardRecord",
+]

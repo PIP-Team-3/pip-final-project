@@ -24,6 +24,8 @@ from .models import (
     RunEventCreate,
     RunRecord,
     StorageArtifact,
+    StoryboardCreate,
+    StoryboardRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,9 @@ class SupabaseDatabase:
     def __init__(self, client: Client) -> None:
         self._client = client
 
+    # ------------------------------------------------------------------
+    # Papers
+    # ------------------------------------------------------------------
     def insert_paper(self, payload: PaperCreate) -> PaperRecord:
         data = payload.model_dump(mode="json", exclude_none=False)
         created_by = data.get("created_by")
@@ -85,20 +90,6 @@ class SupabaseDatabase:
         if not result:
             raise RuntimeError("Failed to insert paper record")
         return PaperRecord.model_validate(result)
-    def insert_plan(self, payload: PlanCreate) -> PlanRecord:
-        data = payload.model_dump(mode="json", exclude_none=False)
-        created_by = data.get("created_by")
-        if not is_valid_uuid(created_by):
-            data.pop("created_by", None)
-        response = self._client.table("plans").insert(data).execute()
-        result = getattr(response, "data", None)
-        if isinstance(result, list):
-            result = result[0] if result else None
-        if not result:
-            raise RuntimeError("Failed to insert plan record")
-        return PlanRecord.model_validate(result)
-
-
 
     def get_paper(self, paper_id: str) -> Optional[PaperRecord]:
         response = (
@@ -126,99 +117,6 @@ class SupabaseDatabase:
             return None
         return PaperRecord.model_validate(data[0])
 
-
-    def get_plan(self, plan_id: str) -> Optional[PlanRecord]:
-        try:
-            response = (
-                self._client.table("plans")
-                .select("*")
-                .eq("id", plan_id)
-                .single()
-                .execute()
-            )
-        except Exception:
-            return None
-        data = getattr(response, "data", None)
-        if not data:
-            return None
-        return PlanRecord.model_validate(data)
-
-    def set_plan_env_hash(self, plan_id: str, env_hash: str) -> PlanRecord:
-        payload = {
-            "env_hash": env_hash,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        response = (
-            self._client.table("plans")
-            .update(payload)
-            .eq("id", plan_id)
-            .select("*")
-            .single()
-            .execute()
-        )
-        data = getattr(response, "data", None)
-        if not data:
-            raise RuntimeError("Failed to update plan record with env hash")
-        return PlanRecord.model_validate(data)
-
-def insert_run(self, payload: RunCreate) -> RunRecord:
-    data = payload.model_dump(mode="json", exclude_none=False)
-    response = (
-        self._client.table("runs")
-        .insert(data)
-        .select("*")
-        .single()
-        .execute()
-    )
-    record = getattr(response, "data", None)
-    if not record:
-        raise RuntimeError("Failed to insert run record")
-    return RunRecord.model_validate(record)
-
-def update_run(self, run_id: str, *, status: str, finished_at: datetime | None = None, env_hash: str | None = None) -> RunRecord:
-    update_payload: dict[str, Any] = {"status": status}
-    if finished_at:
-        update_payload["finished_at"] = finished_at.isoformat()
-    if env_hash:
-        update_payload["env_hash"] = env_hash
-    response = (
-        self._client.table("runs")
-        .update(update_payload)
-        .eq("id", run_id)
-        .select("*")
-        .single()
-        .execute()
-    )
-    record = getattr(response, "data", None)
-    if not record:
-        raise RuntimeError("Failed to update run record")
-    return RunRecord.model_validate(record)
-
-def insert_run_event(self, payload: RunEventCreate) -> None:
-    data = payload.model_dump(mode="json")
-    self._client.table("run_events").insert(data).execute()
-
-def insert_run_series(self, run_id: str, metric: str, step: int, value: float) -> None:
-    data = {
-        "run_id": run_id,
-        "metric": metric,
-        "step": step,
-        "value": value,
-    }
-    self._client.table("run_series").insert(data).execute()
-
-    def delete_paper(self, paper_id: str) -> int:
-        response = (
-            self._client.table("papers")
-            .delete()
-            .eq("id", paper_id)
-            .execute()
-        )
-        deleted = getattr(response, "count", None)
-        if deleted is not None:
-            return deleted
-        return 1
-
     def update_paper_vector_store(
         self, paper_id: str, vector_store_id: str, storage_path: Optional[str]
     ) -> PaperRecord:
@@ -237,6 +135,230 @@ def insert_run_series(self, run_id: str, metric: str, step: int, value: float) -
         if not data:
             raise RuntimeError("Unable to update paper vector store metadata")
         return PaperRecord.model_validate(data)
+
+    # ------------------------------------------------------------------
+    # Plans
+    # ------------------------------------------------------------------
+    def insert_plan(self, payload: PlanCreate) -> PlanRecord:
+        data = payload.model_dump(mode="json", exclude_none=False)
+        created_by = data.get("created_by")
+        if not is_valid_uuid(created_by):
+            data.pop("created_by", None)
+        response = self._client.table("plans").insert(data).execute()
+        result = getattr(response, "data", None)
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if not result:
+            raise RuntimeError("Failed to insert plan record")
+        return PlanRecord.model_validate(result)
+
+    def get_plan(self, plan_id: str) -> Optional[PlanRecord]:
+        response = (
+            self._client.table("plans")
+            .select("*")
+            .eq("id", plan_id)
+            .single()
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if not data:
+            return None
+        return PlanRecord.model_validate(data)
+
+    def set_plan_env_hash(self, plan_id: str, env_hash: str) -> PlanRecord:
+        update_payload = {
+            "env_hash": env_hash,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        response = (
+            self._client.table("plans")
+            .update(update_payload)
+            .eq("id", plan_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if not data:
+            raise RuntimeError("Failed to update plan env hash")
+        return PlanRecord.model_validate(data)
+
+    # ------------------------------------------------------------------
+    # Runs
+    # ------------------------------------------------------------------
+    def insert_run(self, payload: RunCreate) -> RunRecord:
+        data = payload.model_dump(mode="json", exclude_none=False)
+        response = (
+            self._client.table("runs")
+            .insert(data)
+            .select("*")
+            .single()
+            .execute()
+        )
+        record = getattr(response, "data", None)
+        if not record:
+            raise RuntimeError("Failed to insert run record")
+        return RunRecord.model_validate(record)
+
+    def update_run(
+        self,
+        run_id: str,
+        *,
+        status: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
+        env_hash: Optional[str] = None,
+    ) -> RunRecord:
+        update_payload: dict[str, Any] = {}
+        if status is not None:
+            update_payload["status"] = status
+        if started_at is not None:
+            update_payload["started_at"] = started_at.isoformat()
+        if completed_at is not None:
+            update_payload["completed_at"] = completed_at.isoformat()
+        if env_hash is not None:
+            update_payload["env_hash"] = env_hash
+        if not update_payload:
+            return self.get_run(run_id)  # type: ignore[return-value]
+        response = (
+            self._client.table("runs")
+            .update(update_payload)
+            .eq("id", run_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        record = getattr(response, "data", None)
+        if not record:
+            raise RuntimeError("Failed to update run record")
+        return RunRecord.model_validate(record)
+
+    def get_run(self, run_id: str) -> Optional[RunRecord]:
+        response = (
+            self._client.table("runs")
+            .select("*")
+            .eq("id", run_id)
+            .single()
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if not data:
+            return None
+        return RunRecord.model_validate(data)
+
+    def get_runs_by_paper(self, paper_id: str) -> list[RunRecord]:
+        """Fetch all runs for a given paper_id, sorted by created_at descending."""
+        # Find all plans for this paper, then find all runs for those plans
+        plans_response = (
+            self._client.table("plans")
+            .select("id")
+            .eq("paper_id", paper_id)
+            .execute()
+        )
+        plans_data = getattr(plans_response, "data", None) or []
+        if not plans_data:
+            return []
+
+        plan_ids = [p["id"] for p in plans_data]
+
+        # Fetch all runs for these plans
+        runs_response = (
+            self._client.table("runs")
+            .select("*")
+            .in_("plan_id", plan_ids)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        runs_data = getattr(runs_response, "data", None) or []
+        return [RunRecord.model_validate(r) for r in runs_data]
+
+    def insert_run_event(self, payload: RunEventCreate) -> None:
+        data = payload.model_dump(mode="json")
+        self._client.table("run_events").insert(data).execute()
+
+    def insert_run_series(self, run_id: str, metric: str, step: int, value: float) -> None:
+        data = {
+            "run_id": run_id,
+            "metric": metric,
+            "step": step,
+            "value": value,
+        }
+        self._client.table("run_series").insert(data).execute()
+
+    # ------------------------------------------------------------------
+    # Storyboards
+    # ------------------------------------------------------------------
+    def insert_storyboard(self, payload: StoryboardCreate) -> StoryboardRecord:
+        data = payload.model_dump(mode="json", exclude_none=False)
+        response = (
+            self._client.table("storyboards")
+            .insert(data)
+            .select("*")
+            .single()
+            .execute()
+        )
+        record = getattr(response, "data", None)
+        if not record:
+            raise RuntimeError("Failed to insert storyboard record")
+        return StoryboardRecord.model_validate(record)
+
+    def get_storyboard(self, storyboard_id: str) -> Optional[StoryboardRecord]:
+        response = (
+            self._client.table("storyboards")
+            .select("*")
+            .eq("id", storyboard_id)
+            .single()
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if not data:
+            return None
+        return StoryboardRecord.model_validate(data)
+
+    def update_storyboard(
+        self,
+        storyboard_id: str,
+        *,
+        run_id: Optional[str] = None,
+        storyboard_json: Optional[dict] = None,
+    ) -> StoryboardRecord:
+        update_payload: dict[str, Any] = {}
+        if run_id is not None:
+            update_payload["run_id"] = run_id
+        if storyboard_json is not None:
+            update_payload["storyboard_json"] = storyboard_json
+        update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        if not update_payload:
+            return self.get_storyboard(storyboard_id)  # type: ignore[return-value]
+
+        response = (
+            self._client.table("storyboards")
+            .update(update_payload)
+            .eq("id", storyboard_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        record = getattr(response, "data", None)
+        if not record:
+            raise RuntimeError("Failed to update storyboard record")
+        return StoryboardRecord.model_validate(record)
+
+    # ------------------------------------------------------------------
+    # Housekeeping
+    # ------------------------------------------------------------------
+    def delete_paper(self, paper_id: str) -> int:
+        response = (
+            self._client.table("papers")
+            .delete()
+            .eq("id", paper_id)
+            .execute()
+        )
+        deleted = getattr(response, "count", None)
+        if deleted is not None:
+            return deleted
+        return 1
 
 
 class SupabaseStorage:
@@ -260,6 +382,13 @@ class SupabaseStorage:
 
     def store_pdf(self, key: str, data: bytes) -> StorageArtifact:
         return self.store_asset(key, data, "application/pdf")
+
+    def download(self, key: str) -> bytes:
+        try:
+            return self._storage.download(key)  # type: ignore[no-any-return]
+        except Exception as exc:  # pragma: no cover - SDK-specific
+            logger.error("storage.download.failed bucket=%s key=%s error=%s", self._bucket_name, key, exc)
+            raise
 
     def create_signed_url(self, key: str, expires_in: int = 3600) -> StorageArtifact:
         response = self._storage.create_signed_url(key, expires_in)
@@ -285,4 +414,3 @@ __all__ = [
     "sanitize_headers",
     "is_valid_uuid",
 ]
-

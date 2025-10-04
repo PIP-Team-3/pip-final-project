@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 import openai
 
@@ -34,6 +34,8 @@ class ConfigHealth:
     openai_python_version: str
     models: Dict[str, str]
     tools: Dict[str, bool]
+    runner: Dict[str, Any]
+    last_run: Dict[str, Any] | None
 
 
 def _tool_status() -> Dict[str, bool]:
@@ -46,6 +48,20 @@ def _tool_status() -> Dict[str, bool]:
         "file_search": "file_search" in HOSTED_TOOLS,
         "web_search": "web_search" in HOSTED_TOOLS,
     }
+
+
+def _get_last_run_snapshot() -> Dict[str, Any] | None:
+    """Fetch the most recent run from database for observability."""
+    try:
+        from app.dependencies import get_supabase_db
+
+        db = get_supabase_db()
+        # Query for latest run (v0: naive query, no indexes)
+        # In production would use proper query with limit
+        # For now, return None to avoid circular deps on first load
+        return None
+    except Exception:  # pragma: no cover - defensive fallback
+        return None
 
 
 def config_snapshot() -> ConfigHealth:
@@ -66,6 +82,17 @@ def config_snapshot() -> ConfigHealth:
         "code_interpreter_seconds": settings.tool_cap_code_interpreter_seconds,
     }
     tools = _tool_status()
+
+    # Runner posture
+    runner = {
+        "cpu_only": True,
+        "seed_policy": "deterministic",
+        "artifact_caps": {"logs_mib": 2, "events_mib": 5},
+    }
+
+    # Last run snapshot (optional, may be None on cold start)
+    last_run = _get_last_run_snapshot()
+
     return ConfigHealth(
         supabase_url_present=presence["supabase_url"],
         supabase_service_role_present=presence["supabase_service_role_key"],
@@ -78,6 +105,8 @@ def config_snapshot() -> ConfigHealth:
         openai_python_version=getattr(openai, "__version__", "unknown"),
         models={"selected": settings.openai_model},
         tools=tools,
+        runner=runner,
+        last_run=last_run,
     )
 
 
