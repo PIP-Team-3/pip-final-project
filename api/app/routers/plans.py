@@ -103,16 +103,29 @@ async def create_plan(
     tool_payloads = build_tool_payloads(agent)
     tools = list(tool_payloads)
 
-    # Ensure file_search tool exists with max_num_results
+    # Ensure file_search tool exists with max_num_results and vector_store_ids
+    # Only add vector_store_ids if we have a valid one (don't pass empty arrays)
     has_file_search = False
     for i, tool in enumerate(tools):
         if isinstance(tool, dict) and tool.get("type") == "file_search":
-            tools[i] = {"type": "file_search", "max_num_results": PLAN_FILE_SEARCH_RESULTS}
+            file_search_config = {
+                "type": "file_search",
+                "max_num_results": PLAN_FILE_SEARCH_RESULTS,
+            }
+            if paper.vector_store_id:
+                file_search_config["vector_store_ids"] = [paper.vector_store_id]
+            tools[i] = file_search_config
             has_file_search = True
             break
 
     if not has_file_search:
-        tools.insert(0, {"type": "file_search", "max_num_results": PLAN_FILE_SEARCH_RESULTS})
+        file_search_config = {
+            "type": "file_search",
+            "max_num_results": PLAN_FILE_SEARCH_RESULTS,
+        }
+        if paper.vector_store_id:
+            file_search_config["vector_store_ids"] = [paper.vector_store_id]
+        tools.insert(0, file_search_config)
 
     system_content = {
         "role": "system",
@@ -136,12 +149,6 @@ async def create_plan(
                         "policy": {"budget_minutes": policy_budget},
                     }
                 ),
-            }
-        ],
-        "attachments": [
-            {
-                "vector_store_id": paper.vector_store_id,
-                "tools": [{"type": "file_search"}],
             }
         ],
     }
@@ -169,11 +176,11 @@ async def create_plan(
                 tools=tools,
                 temperature=agent_defaults.temperature,
                 max_output_tokens=agent_defaults.max_output_tokens,
-                text_format=agent.output_type,
             )
             with stream_manager as stream:
                 for event in stream:
                     event_type = getattr(event, "type", "")
+                    logger.info(f"planner.event type={event_type} event={event}")
 
                     if event_type == FILE_SEARCH_STAGE_EVENT:
                         with traced_subspan(span, "p2n.planner.tool.file_search"):
@@ -205,6 +212,77 @@ async def create_plan(
 
                 if final_response is None:
                     final_response = stream.get_final_response()
+
+        # Parse output text from response
+        output_text = getattr(final_response, "output_text", None)
+        if not output_text:
+            # Fallback: assemble from output array
+            parts = []
+            for item in getattr(final_response, "output", []) or []:
+                for block in getattr(item, "content", []) or []:
+                    text = getattr(block, "text", None)
+                    if text:
+                        parts.append(text)
+            output_text = "\n".join(parts) if parts else ""
+
+        if not output_text or not output_text.strip():
+            logger.warning(
+                "planner.run.empty_output paper_id=%s vector_store_id=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+            )
+            record_trace("failed", ERROR_PLAN_NO_OUTPUT)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": ERROR_PLAN_NO_OUTPUT,
+                    "message": "Planner produced empty output",
+                    "remediation": "Retry planning or adjust prompts",
+                },
+            )
+
+        # Parse JSON
+        try:
+            plan_raw = json.loads(output_text.strip())
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "planner.run.invalid_json paper_id=%s vector_store_id=%s output=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+                output_text[:200],
+            )
+            record_trace("failed", ERROR_PLAN_SCHEMA_INVALID)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": ERROR_PLAN_SCHEMA_INVALID,
+                    "message": f"Planner returned invalid JSON: {exc}",
+                    "remediation": "Retry planning or adjust system prompt",
+                },
+            ) from exc
+
+        # Convert to dataclass for guardrail check
+        from ..agents.types import PlannerOutput
+
+        try:
+            parsed_output = PlannerOutput(**plan_raw)
+        except (TypeError, ValueError) as exc:
+            logger.error(
+                "planner.run.dataclass_mapping_failed paper_id=%s vector_store_id=%s error=%s",
+                paper.id,
+                redact_vector_store_id(paper.vector_store_id),
+                exc,
+            )
+            record_trace("failed", ERROR_PLAN_SCHEMA_INVALID)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": ERROR_PLAN_SCHEMA_INVALID,
+                    "message": f"Planner output structure mismatch: {exc}",
+                    "remediation": "Verify planner prompt matches expected schema",
+                },
+            ) from exc
+
     except OpenAIError as exc:
         logger.exception(
             "planner.run.openai_error paper_id=%s vector_store_id=%s",
@@ -266,23 +344,6 @@ async def create_plan(
                 "code": ERROR_PLAN_NO_OUTPUT,
                 "message": "Planner did not produce any output",
                 "remediation": "Retry planning or adjust prompts",
-            },
-        )
-
-    parsed_output = getattr(final_response, "output_parsed", None)
-    if parsed_output is None:
-        logger.warning(
-            "planner.run.output_unparsed paper_id=%s vector_store_id=%s",
-            paper.id,
-            redact_vector_store_id(paper.vector_store_id),
-        )
-        record_trace("failed", ERROR_PLAN_NO_OUTPUT)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": ERROR_PLAN_NO_OUTPUT,
-                "message": "Planner output was not parseable",
-                "remediation": "Ensure planner schema matches agent output",
             },
         )
 

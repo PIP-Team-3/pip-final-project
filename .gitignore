@@ -23,6 +23,11 @@ pnpm-lock.yaml
 # IDE
 .vscode/
 .idea/
+.claude/
+
+# Local dev scripts (may contain secrets)
+start_server.ps1
+start_server.local.ps1
 
 # Notebooks
 .ipynb_checkpoints/
