@@ -17,7 +17,6 @@ class PaperCreate(BaseModel):
     pdf_sha256: str
     status: str
     created_by: Optional[str] = None
-    is_public: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -45,7 +44,7 @@ class PlanCreate(BaseModel):
     version: str
     plan_json: dict[str, Any]
     env_hash: Optional[str] = None
-    compute_budget_minutes: Optional[int] = None
+    budget_minutes: Optional[int] = None
     status: Optional[str] = None
     created_by: Optional[str] = None
     created_at: datetime
@@ -67,10 +66,14 @@ class RunCreate(BaseModel):
     plan_id: str
     paper_id: str
     status: str
-    env_hash: str | None = None
+    env_hash: str
+    seed: int = 42
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    duration_sec: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
 
     model_config = {
         "extra": "ignore",
@@ -100,6 +103,7 @@ class StoryboardCreate(BaseModel):
     paper_id: str
     run_id: Optional[str] = None
     storyboard_json: dict[str, Any]
+    storage_path: str
     created_at: datetime
     updated_at: datetime
 

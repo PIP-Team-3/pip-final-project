@@ -222,7 +222,7 @@ def test_planner_creates_plan(monkeypatch, planner_setup):
     # Plan persisted
     inserted = planner_setup["db"].inserted_plan
     assert inserted is not None
-    assert inserted.compute_budget_minutes == 15
+    assert inserted.budget_minutes == 15
 
 
 def test_planner_schema_validation_error(monkeypatch, planner_setup):

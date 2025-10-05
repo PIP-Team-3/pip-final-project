@@ -238,16 +238,32 @@ async def start_run(
 
     run_id = str(uuid4())
     now = datetime.now(timezone.utc)
+
+    # Ensure plan is materialized (env_hash required)
+    env_hash = getattr(plan_record, "env_hash", None)
+    if not env_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "E_PLAN_NOT_MATERIALIZED",
+                "message": "Plan must be materialized before running",
+            },
+        )
+
     db.insert_run(
         RunCreate(
             id=run_id,
             plan_id=plan_record.id,
             paper_id=plan_record.paper_id,
             status=RUN_STATUS_PENDING,
-            env_hash=getattr(plan_record, "env_hash", None),
+            env_hash=env_hash,
+            seed=42,
             created_at=now,
             started_at=None,
             completed_at=None,
+            duration_sec=None,
+            error_code=None,
+            error_message=None,
         )
     )
 

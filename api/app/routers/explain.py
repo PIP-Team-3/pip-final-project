@@ -92,13 +92,15 @@ async def create_kid_storyboard(
     # Generate ID and timestamps
     storyboard_id = f"story-{uuid.uuid4()}"
     now = datetime.now(timezone.utc)
+    storage_key = f"storyboards/{storyboard_id}.json"
 
-    # Save to database (v0)
+    # Save to database (v1)
     storyboard_create = StoryboardCreate(
         id=storyboard_id,
         paper_id=paper_id,
         run_id=None,  # Will be set on refresh
         storyboard_json=storyboard_data,
+        storage_path=storage_key,
         created_at=now,
         updated_at=now,
     )
@@ -106,7 +108,6 @@ async def create_kid_storyboard(
     db.insert_storyboard(storyboard_create)
 
     # Save JSON to storage
-    storage_key = f"storyboards/{storyboard_id}.json"
     import json
 
     storage.store_text(storage_key, json.dumps(storyboard_data, indent=2), "application/json")

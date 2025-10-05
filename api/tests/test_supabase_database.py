@@ -34,7 +34,7 @@ def _plan_payload(created_by: str | None = _VALID_UUID) -> PlanCreate:
         version="1.1",
         plan_json={"version": "1.1"},
         env_hash=None,
-        compute_budget_minutes=15,
+        budget_minutes=15,
         status="draft",
         created_by=created_by,
         created_at=now,
@@ -132,4 +132,4 @@ def test_insert_plan_omits_invalid_created_by():
 
     assert client.last_query is not None
     assert "created_by" not in client.last_query.last_payload
-    assert record.compute_budget_minutes == payload.compute_budget_minutes
+    assert record.budget_minutes == payload.budget_minutes

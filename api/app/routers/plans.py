@@ -404,7 +404,7 @@ async def create_plan(
         version=plan_model.version,
         plan_json=plan_model.model_dump(),
         env_hash=None,
-        compute_budget_minutes=plan_model.policy.budget_minutes,
+        budget_minutes=plan_model.policy.budget_minutes,
         status=DEFAULT_PLAN_STATUS,
         created_by=settings.p2n_dev_user_id if is_valid_uuid(settings.p2n_dev_user_id) else None,
         created_at=now,

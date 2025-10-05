@@ -81,9 +81,8 @@ async def db_smoke_test(db=Depends(get_supabase_db)) -> DbSmokeResponse:
             pdf_storage_path=f"papers/dev/smoke/{paper_id}.pdf",
             vector_store_id="vs-smoke",
             pdf_sha256="smoke-checksum",
-            status="smoke",
+            status="ready",
             created_by="dev-smoke",
-            is_public=False,
             created_at=now,
             updated_at=now,
         )

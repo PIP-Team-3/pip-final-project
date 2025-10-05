@@ -406,6 +406,15 @@ class SupabaseStorage:
         items = result if isinstance(result, list) else result.get("data", [])
         return any(item.get("name") == filename for item in items)
 
+    def delete_object(self, key: str) -> bool:
+        """Delete an object from storage. Returns True if deleted, False if not found."""
+        try:
+            self._storage.remove([key])
+            return True
+        except Exception as exc:  # pragma: no cover - SDK-specific
+            logger.warning("storage.delete.failed bucket=%s key=%s error=%s", self._bucket_name, key, exc)
+            return False
+
 
 __all__ = [
     "SupabaseClientFactory",

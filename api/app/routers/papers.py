@@ -224,7 +224,6 @@ async def ingest_paper(
                 pdf_sha256=checksum,
                 status="ingested",
                 created_by=effective_created_by,
-                is_public=False,
                 created_at=now,
                 updated_at=now,
             )

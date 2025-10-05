@@ -65,7 +65,7 @@ def _plan_record(plan_id: str) -> PlanRecord:
         version="1.1",
         plan_json=_plan_json(),
         env_hash=None,
-        compute_budget_minutes=15,
+        budget_minutes=15,
         status="draft",
         created_by=None,
         created_at=datetime.now(timezone.utc),
