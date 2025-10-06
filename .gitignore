@@ -35,3 +35,13 @@ start_server.local.ps1
 # Coverage
 .coverage
 coverage/
+
+# Test data and uploads
+uploads/
+docs/Test Papers/
+ingest_results.txt
+upload_results.txt
+extract_test.log
+
+# Local scripts
+scripts/

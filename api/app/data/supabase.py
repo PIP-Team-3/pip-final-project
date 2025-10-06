@@ -373,7 +373,7 @@ class SupabaseStorage:
         return self._bucket_name
 
     def store_asset(self, key: str, data: bytes, content_type: str) -> StorageArtifact:
-        headers = sanitize_headers({"contentType": content_type})
+        headers = sanitize_headers({"content-type": content_type})
         self._storage.upload(path=key, file=data, file_options=headers)
         return StorageArtifact(bucket=self._bucket_name, path=key)
 

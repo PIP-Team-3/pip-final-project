@@ -28,16 +28,19 @@ class FileSearchService:
         return getattr(file_obj, "id")
 
     def search(self, vector_store_id: str, query: str, max_results: int = 3) -> List[dict[str, Any]]:
+        # Responses API input: List of Message objects
+        # Each message MUST have "type": "message" at top level (verified via SDK types)
+        user_msg = {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": query}
+            ]
+        }
+
         response = self._client.responses.create(
             model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": query},
-                    ],
-                }
-            ],
+            input=[user_msg],
             attachments=[
                 {
                     "file_search": {

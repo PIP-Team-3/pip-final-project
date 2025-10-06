@@ -127,13 +127,20 @@ async def create_plan(
             file_search_config["vector_store_ids"] = [paper.vector_store_id]
         tools.insert(0, file_search_config)
 
-    system_content = {
+    # Responses API input: List of Message objects
+    # Each message MUST have "type": "message" at top level (verified via SDK types)
+    policy_budget = min(payload.budget_minutes, 20)
+
+    system_msg = {
+        "type": "message",
         "role": "system",
-        "content": [{"type": "input_text", "text": agent.system_prompt}],
+        "content": [
+            {"type": "input_text", "text": agent.system_prompt}
+        ]
     }
 
-    policy_budget = min(payload.budget_minutes, 20)
-    user_payload = {
+    user_msg = {
+        "type": "message",
         "role": "user",
         "content": [
             {
@@ -150,8 +157,10 @@ async def create_plan(
                     }
                 ),
             }
-        ],
+        ]
     }
+
+    input_blocks = [system_msg, user_msg]
     file_search_calls = 0
     span = None
 
@@ -172,7 +181,7 @@ async def create_plan(
             span = traced_span
             stream_manager = client.responses.stream(
                 model=agent_defaults.model,
-                input=[system_content, user_payload],
+                input=input_blocks,
                 tools=tools,
                 temperature=agent_defaults.temperature,
                 max_output_tokens=agent_defaults.max_output_tokens,

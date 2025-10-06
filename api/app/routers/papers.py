@@ -10,12 +10,15 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
-from openai import OpenAIError
+from openai import OpenAIError, pydantic_function_tool
 from pydantic import BaseModel, HttpUrl
 
 from ..agents import AgentRole, OutputGuardrailTripwireTriggered, get_agent
+from ..agents.jsonizer import jsonize_or_raise
 from ..agents.runtime import build_tool_payloads
+from ..agents.schemas import ExtractorOutputModel
 from ..agents.tooling import ToolUsageTracker
+from ..agents.types import ExtractorOutput, ExtractedClaim, Citation
 from ..config.llm import agent_defaults, get_client, traced_run, traced_subspan
 from ..data import PaperCreate
 from ..config.settings import get_settings
@@ -48,6 +51,14 @@ ERROR_OPENAI = "E_EXTRACT_OPENAI_ERROR"
 POLICY_CAP_CODE = "E_POLICY_CAP_EXCEEDED"
 FILE_SEARCH_MAX_RESULTS = 8
 
+# Function tool for forced structured output (Responses API requirement)
+EMIT_TOOL_NAME = "emit_extractor_output"
+EMIT_EXTRACTOR_OUTPUT_TOOL = pydantic_function_tool(
+    ExtractorOutputModel,
+    name=EMIT_TOOL_NAME,
+    description="Emit the extractor's final structured results as one JSON object.",
+)
+
 router = APIRouter(prefix="/api/v1/papers", tags=["papers"])
 
 
@@ -75,7 +86,7 @@ def _require_pdf(file: UploadFile) -> None:
 
 
 async def _download_url(url: HttpUrl) -> tuple[bytes, str]:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         response = await client.get(str(url))
         if response.status_code != 200:
             raise HTTPException(
@@ -222,7 +233,7 @@ async def ingest_paper(
                 pdf_storage_path=storage_path,
                 vector_store_id=vector_store_id,
                 pdf_sha256=checksum,
-                status="ingested",
+                status="ready",
                 created_by=effective_created_by,
                 created_at=now,
                 updated_at=now,
@@ -317,48 +328,60 @@ async def run_extractor(
     tool_payloads = build_tool_payloads(agent)
     tools = list(tool_payloads)
 
-    # Ensure file_search tool exists with max_num_results
-    has_file_search = False
-    for i, tool in enumerate(tools):
-        if isinstance(tool, dict) and tool.get("type") == "file_search":
-            tools[i] = {"type": "file_search", "max_num_results": FILE_SEARCH_MAX_RESULTS}
-            has_file_search = True
-            break
+    # Build tools: file_search + forced function tool for structured output
+    # NOTE: API expects vector_store_ids at TOP LEVEL of tool, not nested in file_search
+    tools = [
+        {
+            "type": "file_search",
+            "vector_store_ids": [paper.vector_store_id],
+            "max_num_results": FILE_SEARCH_MAX_RESULTS,
+        },
+        EMIT_EXTRACTOR_OUTPUT_TOOL,
+    ]
 
-    if not has_file_search:
-        tools.insert(0, {"type": "file_search", "max_num_results": FILE_SEARCH_MAX_RESULTS})
+    # Force the model to call emit_extractor_output (hard gate for JSON)
+    # Responses API format: {"type": "function", "name": "..."}
+    tool_choice = {"type": "function", "name": EMIT_TOOL_NAME}
 
-    system_content = {
+    # Responses API input: List of Message objects
+    # Each message MUST have "type": "message" at top level (verified via SDK types)
+    system_msg = {
+        "type": "message",
         "role": "system",
-        "content": [{"type": "input_text", "text": agent.system_prompt}],
+        "content": [
+            {"type": "input_text", "text": agent.system_prompt}
+        ]
     }
-    user_payload = {
+
+    user_msg = {
+        "type": "message",
         "role": "user",
         "content": [
             {
                 "type": "input_text",
-                "text": json.dumps(
-                    {
-                        "paper_id": paper.id,
-                        "title": paper.title,
-                        "vector_store_id": paper.vector_store_id,
-                    }
+                "text": (
+                    f"Paper ID: {paper.id}\n"
+                    f"Title: {paper.title}\n\n"
+                    "Task: Extract quantitative performance claims from the paper.\n\n"
+                    "Requirements:\n"
+                    "- Each claim includes: dataset_name, split, metric_name, metric_value, units, method_snippet, source_citation, confidence (0..1).\n"
+                    "- Cite the paper section/table in `source_citation`.\n"
+                    "- Exclude ambiguous statements ('better', 'state of the art') unless quantified.\n"
+                    "- Return ONLY JSON that matches the schema. No additional text."
                 ),
             }
-        ],
-        "attachments": [
-            {
-                "vector_store_id": paper.vector_store_id,
-                "tools": [{"type": "file_search"}],
-            }
-        ],
+        ]
     }
+
+    input_blocks = [system_msg, user_msg]
 
     def event_stream() -> Iterator[str]:
         file_search_calls = 0
         guardrail_status = "pending"
         final_response: Any | None = None
         span: Any | None = None
+        args_chunks: list[str] = []  # Collect tool call arguments
+        token_buffer: list[str] = []  # Fallback for JSONizer rescue
 
         def record_trace(status: str, code: Optional[str] = None) -> None:
             if span is None:
@@ -373,13 +396,17 @@ async def run_extractor(
         try:
             with traced_run("p2n.extractor.run") as traced_span:
                 span = traced_span
+                # DEBUG: Log the tools structure
+                import sys
+                print(f"DEBUG extractor.tools={tools}", file=sys.stderr)
+                # Force tool call (no response_format needed - tool args ARE the JSON)
                 stream_manager = client.responses.stream(
                     model=agent_defaults.model,
-                    input=[system_content, user_payload],
+                    input=input_blocks,
                     tools=tools,
-                    temperature=agent_defaults.temperature,
+                    tool_choice=tool_choice,
+                    temperature=0,  # Deterministic for extraction
                     max_output_tokens=agent_defaults.max_output_tokens,
-                    text_format=agent.output_type,
                 )
                 with stream_manager as stream:
                     for event in stream:
@@ -413,10 +440,22 @@ async def run_extractor(
                             yield _sse_event("stage_update", {"stage": "file_search_call"})
                             continue
 
+                        # Capture function tool call arguments (the JSON we want)
+                        if event_type in ("response.function_call.arguments.delta", "response.function_call.delta"):
+                            delta_obj = getattr(event, "delta", None)
+                            if delta_obj:
+                                # Prefer arguments_delta (SDK 1.109.1), fallback to arguments
+                                args_delta = getattr(delta_obj, "arguments_delta", None) or getattr(delta_obj, "arguments", None)
+                                tool_name = getattr(delta_obj, "name", None) or EMIT_TOOL_NAME
+                                if tool_name == EMIT_TOOL_NAME and args_delta:
+                                    args_chunks.append(args_delta)
+                            continue
+
                         if event_type == TOKEN_EVENT_TYPE:
                             delta = getattr(event, "delta", "")
                             if delta:
-                                yield _sse_event("token", {"delta": delta})
+                                token_buffer.append(delta)  # Capture for JSONizer fallback
+                                yield _sse_event("token", {"delta": delta, "agent": "extractor"})
                             continue
 
                         if event_type.startswith(REASONING_EVENT_PREFIX):
@@ -449,6 +488,7 @@ async def run_extractor(
                             )
                             return
 
+                    # Get final response
                     if final_response is None:
                         try:
                             final_response = stream.get_final_response()
@@ -458,16 +498,7 @@ async def run_extractor(
                                 paper.id,
                                 redact_vector_store_id(paper.vector_store_id),
                             )
-                            record_trace("failed", ERROR_NO_OUTPUT)
-                            yield _sse_event(
-                                "error",
-                                {
-                                    "code": ERROR_NO_OUTPUT,
-                                    "message": "Extractor did not return a structured payload",
-                                    "remediation": "Retry extraction or inspect agent configuration",
-                                },
-                            )
-                            return
+                            # Continue - we might still have args_chunks
         except OpenAIError as exc:
             logger.exception(
                 "extractor.run.openai_error paper_id=%s vector_store_id=%s",
@@ -501,37 +532,102 @@ async def run_extractor(
             )
             return
 
-        if not final_response:
-            logger.warning(
-                "extractor.run.no_output paper_id=%s vector_store_id=%s",
-                paper.id,
-                redact_vector_store_id(paper.vector_store_id),
-            )
-            record_trace("failed", ERROR_NO_OUTPUT)
-            yield _sse_event(
-                "error",
-                {
-                    "code": ERROR_NO_OUTPUT,
-                    "message": "Extractor did not produce any claims",
-                    "remediation": "Retry extraction or update the paper inputs",
-                },
-            )
-            return
+        # Parse tool call arguments (primary path)
+        parsed_output = None
+        if args_chunks:
+            try:
+                # Validate with Pydantic first
+                validated = ExtractorOutputModel.model_validate_json("".join(args_chunks))
+                # Convert Pydantic → dataclass (nested Citation structure)
+                claims = [
+                    ExtractedClaim(
+                        dataset_name=c.dataset_name,
+                        split=c.split,
+                        metric_name=c.metric_name,
+                        metric_value=c.metric_value,
+                        units=c.units,
+                        method_snippet=c.method_snippet,
+                        citation=Citation(
+                            source_citation=c.citation.source_citation,
+                            confidence=c.citation.confidence
+                        ),
+                    )
+                    for c in validated.claims
+                ]
+                parsed_output = ExtractorOutput(claims=claims)
+                logger.info(
+                    "extractor.tool_call.success paper_id=%s claims=%d",
+                    paper.id,
+                    len(parsed_output.claims),
+                )
+            except (json.JSONDecodeError, Exception) as exc:
+                logger.warning(
+                    "extractor.tool_call.parse_failed paper_id=%s error=%s",
+                    paper.id,
+                    str(exc),
+                )
 
-        parsed_output = getattr(final_response, "output_parsed", None)
+        # Fallback: JSONizer rescue (Plan B)
+        if parsed_output is None and token_buffer:
+            raw_text = "".join(token_buffer)
+            try:
+                logger.info(
+                    "extractor.jsonizer.attempting paper_id=%s text_len=%d",
+                    paper.id,
+                    len(raw_text),
+                )
+                repaired_dict = jsonize_or_raise(
+                    client=client,
+                    raw_text=raw_text,
+                    schema=ExtractorOutputModel.model_json_schema(),
+                    name="extractor_output",
+                    model="gpt-4o-mini",
+                )
+                # Convert repaired dict → Pydantic → dataclass
+                validated = ExtractorOutputModel.model_validate(repaired_dict)
+                claims = [
+                    ExtractedClaim(
+                        dataset_name=c.dataset_name,
+                        split=c.split,
+                        metric_name=c.metric_name,
+                        metric_value=c.metric_value,
+                        units=c.units,
+                        method_snippet=c.method_snippet,
+                        citation=Citation(
+                            source_citation=c.citation.source_citation,
+                            confidence=c.citation.confidence
+                        ),
+                    )
+                    for c in validated.claims
+                ]
+                parsed_output = ExtractorOutput(claims=claims)
+                logger.info(
+                    "extractor.jsonizer.success paper_id=%s claims=%d",
+                    paper.id,
+                    len(parsed_output.claims),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "extractor.jsonizer.failed paper_id=%s",
+                    paper.id,
+                )
+
+        # Fail-closed: no valid output
         if parsed_output is None:
-            logger.warning(
-                "extractor.run.output_unparsed paper_id=%s vector_store_id=%s",
+            logger.error(
+                "extractor.no_valid_output paper_id=%s args_chunks=%d tokens=%d",
                 paper.id,
-                redact_vector_store_id(paper.vector_store_id),
+                len(args_chunks),
+                len(token_buffer),
             )
             record_trace("failed", ERROR_NO_OUTPUT)
             yield _sse_event(
                 "error",
                 {
+                    "agent": "extractor",
                     "code": ERROR_NO_OUTPUT,
-                    "message": "Extractor output was not parseable",
-                    "remediation": "Ensure the extractor schema matches agent output",
+                    "message": "Extractor failed to produce structured output; JSONizer repair failed.",
+                    "remediation": "Check extractor prompt & schema; try higher-tier model.",
                 },
             )
             return
