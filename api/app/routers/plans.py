@@ -179,8 +179,10 @@ async def create_plan(
     try:
         with traced_run("p2n.planner.run") as traced_span:
             span = traced_span
+            planner_settings = get_settings()
+            planner_model = planner_settings.openai_planner_model
             stream_manager = client.responses.stream(
-                model=agent_defaults.model,
+                model=planner_model,
                 input=input_blocks,
                 tools=tools,
                 temperature=agent_defaults.temperature,

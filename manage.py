@@ -5,6 +5,10 @@ Usage: python manage.py <command>
 
 Commands:
   env           Print all environment variables (loads from .env)
+  models        Show/set current model configuration
+  set-extractor <model>   Set extractor model (gpt-4o, o3-mini)
+  set-planner <model>     Set planner model (o3-mini, gpt-5)
+  pwsh-env      Generate PowerShell command to load .env
   start         Start the API server (auto-loads .env)
   health        Check API health
   download      Download all 20 papers to uploads/
@@ -244,6 +248,75 @@ def generate_report(paper_id):
     except Exception as e:
         print(f"✗ Error: {e}")
 
+def show_models():
+    """Show current model configuration"""
+    env = load_env()
+
+    print("=== Current Model Configuration ===\n")
+    print(f"Extractor Model:  {env.get('OPENAI_EXTRACTOR_MODEL', 'gpt-4o (default)')}")
+    print(f"Planner Model:    {env.get('OPENAI_PLANNER_MODEL', 'o3-mini (default)')}")
+    print(f"\nAvailable Models:")
+    print("  Extractor: gpt-4o, o3-mini")
+    print("  Planner:   o3-mini, gpt-5")
+    print(f"\nTo change models:")
+    print("  python manage.py set-extractor <model>")
+    print("  python manage.py set-planner <model>")
+
+def set_extractor_model(model):
+    """Set extractor model in .env"""
+    valid_models = ["gpt-4o", "o3-mini"]
+    if model not in valid_models:
+        print(f"✗ Invalid model: {model}")
+        print(f"  Valid options: {', '.join(valid_models)}")
+        return
+
+    update_env_var("OPENAI_EXTRACTOR_MODEL", model)
+    print(f"✓ Extractor model set to: {model}")
+    print("  Restart server for changes to take effect")
+
+def set_planner_model(model):
+    """Set planner model in .env"""
+    valid_models = ["o3-mini", "gpt-5"]
+    if model not in valid_models:
+        print(f"✗ Invalid model: {model}")
+        print(f"  Valid options: {', '.join(valid_models)}")
+        return
+
+    update_env_var("OPENAI_PLANNER_MODEL", model)
+    print(f"✓ Planner model set to: {model}")
+    print("  Restart server for changes to take effect")
+
+def update_env_var(key, value):
+    """Update or add environment variable in .env file"""
+    env_file = Path(".env")
+    if not env_file.exists():
+        print("✗ No .env file found")
+        return
+
+    lines = env_file.read_text().splitlines()
+    found = False
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            found = True
+            break
+
+    if not found:
+        lines.append(f"{key}={value}")
+
+    env_file.write_text('\n'.join(lines) + '\n')
+
+def generate_pwsh_env_loader():
+    """Generate PowerShell command to load .env"""
+    print("=== PowerShell .env Loader ===\n")
+    print("Copy and paste this into PowerShell to load .env:\n")
+    print(r'Get-Content .env | % { if ($_ -match \'^\s*([^#=]+)=(.*)$\') { Set-Item -Path (\'Env:\' + $matches[1].Trim()) -Value ($matches[2].Trim().Trim(\'"\')) } }')
+    print("\nOr run this command directly:")
+    print("  python manage.py pwsh-env | powershell -Command -")
+    print("\nTo verify it worked:")
+    print("  $env:OPENAI_API_KEY")
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
@@ -253,6 +326,22 @@ if __name__ == "__main__":
 
     if command == "env":
         print_env()
+    elif command == "models":
+        show_models()
+    elif command == "set-extractor":
+        if len(sys.argv) < 3:
+            print("Usage: python manage.py set-extractor <model>")
+            print("Valid models: gpt-4o, o3-mini")
+            sys.exit(1)
+        set_extractor_model(sys.argv[2])
+    elif command == "set-planner":
+        if len(sys.argv) < 3:
+            print("Usage: python manage.py set-planner <model>")
+            print("Valid models: o3-mini, gpt-5")
+            sys.exit(1)
+        set_planner_model(sys.argv[2])
+    elif command == "pwsh-env":
+        generate_pwsh_env_loader()
     elif command == "start":
         start_server()
     elif command == "health":

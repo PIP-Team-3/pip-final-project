@@ -398,10 +398,13 @@ async def run_extractor(
                 span = traced_span
                 # DEBUG: Log the tools structure
                 import sys
+                extractor_settings = get_settings()
+                extractor_model = extractor_settings.openai_extractor_model
                 print(f"DEBUG extractor.tools={tools}", file=sys.stderr)
+                print(f"DEBUG extractor.model={extractor_model}", file=sys.stderr)
                 # Force tool call (no response_format needed - tool args ARE the JSON)
                 stream_manager = client.responses.stream(
-                    model=agent_defaults.model,
+                    model=extractor_model,
                     input=input_blocks,
                     tools=tools,
                     tool_choice=tool_choice,
