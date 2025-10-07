@@ -42,7 +42,7 @@ FILE_SEARCH_STAGE_EVENT = "response.file_search_call.searching"
 TOKEN_EVENT_TYPE = "response.output_text.delta"
 REASONING_EVENT_PREFIX = "response.reasoning"
 COMPLETED_EVENT_TYPE = "response.completed"
-FAILED_EVENT_TYPES = {"response.failed", "response.error"}
+FAILED_EVENT_TYPES = {"response.failed", "error"}  # SDK 1.109.1: "error" not "response.error"
 
 ERROR_LOW_CONFIDENCE = "E_EXTRACT_LOW_CONFIDENCE"
 ERROR_RUN_FAILED = "E_EXTRACT_RUN_FAILED"
@@ -414,6 +414,8 @@ async def run_extractor(
                 with stream_manager as stream:
                     for event in stream:
                         event_type = getattr(event, "type", "")
+                        # DEBUG: Log ALL event types to diagnose mismatch
+                        print(f"DEBUG EVENT: type={event_type}", file=sys.stderr)
 
                         if event_type == START_EVENT_TYPE:
                             yield _sse_event("stage_update", {"stage": "extract_start"})
@@ -444,14 +446,12 @@ async def run_extractor(
                             continue
 
                         # Capture function tool call arguments (the JSON we want)
-                        if event_type in ("response.function_call.arguments.delta", "response.function_call.delta"):
-                            delta_obj = getattr(event, "delta", None)
-                            if delta_obj:
-                                # Prefer arguments_delta (SDK 1.109.1), fallback to arguments
-                                args_delta = getattr(delta_obj, "arguments_delta", None) or getattr(delta_obj, "arguments", None)
-                                tool_name = getattr(delta_obj, "name", None) or EMIT_TOOL_NAME
-                                if tool_name == EMIT_TOOL_NAME and args_delta:
-                                    args_chunks.append(args_delta)
+                        # SDK 1.109.1 uses "response.function_call_arguments.delta" (underscores, not dots)
+                        if event_type == "response.function_call_arguments.delta":
+                            # The delta attribute contains the argument chunk (str)
+                            args_delta = getattr(event, "delta", None)
+                            if args_delta:
+                                args_chunks.append(args_delta)
                             continue
 
                         if event_type == TOKEN_EVENT_TYPE:
@@ -539,8 +539,11 @@ async def run_extractor(
         parsed_output = None
         if args_chunks:
             try:
+                # DEBUG: Log the raw JSON
+                raw_json = "".join(args_chunks)
+                print(f"DEBUG CAPTURED JSON: {raw_json}", file=sys.stderr)
                 # Validate with Pydantic first
-                validated = ExtractorOutputModel.model_validate_json("".join(args_chunks))
+                validated = ExtractorOutputModel.model_validate_json(raw_json)
                 # Convert Pydantic → dataclass (nested Citation structure)
                 claims = [
                     ExtractedClaim(

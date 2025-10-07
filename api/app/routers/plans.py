@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 FILE_SEARCH_STAGE_EVENT = "response.file_search_call.searching"
 COMPLETED_EVENT_TYPE = "response.completed"
-FAILED_EVENT_TYPES = {"response.failed", "response.error"}
+FAILED_EVENT_TYPES = {"response.failed", "error"}  # SDK 1.109.1: "error" not "response.error"
 POLICY_CAP_CODE = "E_POLICY_CAP_EXCEEDED"
 ERROR_PLAN_NOT_READY = "E_PLAN_NOT_READY"
 ERROR_PLAN_OPENAI = "E_PLAN_OPENAI_ERROR"
