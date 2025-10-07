@@ -56,9 +56,474 @@
 
 ---
 
+### **4. Real Notebook Generation (C-NOTEBOOK-01)** 🔥 **CRITICAL PRIORITY**
+**Status:** Currently generates 100% fake notebooks - **BLOCKING ALL MEANINGFUL TESTING**
+**Why Critical:** Cannot reproduce real papers, all current runs produce meaningless results
+
+#### **The Problem**
+
+**Current Implementation ([notebook.py](../../../api/app/materialize/notebook.py)):**
+- ❌ **Always generates synthetic data** via `make_classification()` regardless of plan.dataset.name
+- ❌ **Always uses LogisticRegression** regardless of plan.model.name
+- ❌ **Ignores plan.config.framework** completely (never uses PyTorch even if specified)
+- ❌ **No connection to paper claims** - gap analysis will be meaningless
+- ✅ Seeds are deterministic (good foundation)
+- ✅ Writes required artifacts (metrics.json, events.jsonl)
+
+**Impact:**
+```python
+# Plan says: dataset="SST-2", model="TextCNN", framework="torch"
+# Notebook generates: make_classification() + LogisticRegression()
+# Result: Completely useless for reproduction!
+```
+
+**This blocks:**
+- ⏸️ End-to-end testing with real papers
+- ⏸️ Sandbox executor (no point sandboxing fake code)
+- ⏸️ Gap analysis (comparing fake results to real claims)
+- ⏸️ Demos (can't show real paper reproduction)
+
+---
+
+#### **Modular Architecture Design**
+
+**Component Structure:**
+```
+api/app/materialize/
+├── notebook.py (orchestrator)
+└── generators/ (NEW - modular components)
+    ├── __init__.py
+    ├── base.py (CodeGenerator ABC)
+    ├── factory.py (smart selection logic)
+    ├── dataset.py (dataset generators)
+    │   ├── SyntheticDatasetGenerator
+    │   ├── SklearnDatasetGenerator (digits, iris, wine)
+    │   ├── TorchvisionDatasetGenerator (MNIST, CIFAR10)
+    │   └── HuggingFaceDatasetGenerator (SST-2, IMDB)
+    ├── model.py (model generators)
+    │   ├── SklearnModelGenerator (LogReg, RandomForest, SVM)
+    │   ├── TorchCNNGenerator (TextCNN-style)
+    │   └── TorchResNetGenerator (ResNet-18/50/152)
+    └── training.py (training loop generators)
+```
+
+**Design Principles:**
+1. **Modular** - Each generator does ONE thing
+2. **Extensible** - Add new datasets/models without touching existing code
+3. **Testable** - Test each generator independently
+4. **Docker-ready** - All generators produce pure Python code (no state)
+5. **Fallback chains** - If advanced fails, fall back to simpler: HuggingFace → torchvision → sklearn → synthetic
+
+---
+
+#### **Implementation Plan: 4 Phases (4 Weeks)**
+
+### **Phase 1: Refactor to Modular (Week 1)**
+**Goal:** Make code modular WITHOUT changing behavior yet
+
+**Tasks:**
+- [ ] Create `generators/` package structure
+- [ ] Define `CodeGenerator` ABC with methods: `generate_imports()`, `generate_code()`, `generate_requirements()`
+- [ ] Extract current logic into `SyntheticDatasetGenerator` (unchanged)
+- [ ] Extract current logic into `SklearnLogisticGenerator` (unchanged)
+- [ ] Create `GeneratorFactory` with selection logic (returns synthetic/logistic for now)
+- [ ] Update `notebook.py` to use factory pattern
+- [ ] **Test:** All existing tests pass, output identical to before
+
+**Files to Create:**
+```
+api/app/materialize/generators/__init__.py
+api/app/materialize/generators/base.py
+api/app/materialize/generators/dataset.py
+api/app/materialize/generators/model.py
+api/app/materialize/generators/factory.py
+```
+
+**Example Generator:**
+```python
+# generators/dataset.py
+class SyntheticDatasetGenerator(CodeGenerator):
+    def generate_imports(self, plan):
+        return [
+            "from sklearn.datasets import make_classification",
+            "from sklearn.model_selection import train_test_split",
+        ]
+
+    def generate_code(self, plan):
+        return textwrap.dedent(f"""
+        X, y = make_classification(
+            n_samples=512, n_features=32, random_state=SEED
+        )
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=SEED
+        )
+        """).strip()
+
+    def generate_requirements(self, plan):
+        return ["scikit-learn==1.5.1"]
+```
+
+**Success Criteria:**
+- ✅ Code is modular (separate files)
+- ✅ All tests pass
+- ✅ Generated notebooks identical to before
+
+---
+
+### **Phase 2: Smart Dataset Selection (Week 2)**
+**Goal:** Generate code that loads the RIGHT dataset based on plan
+
+**Dataset Registry:**
+```python
+SKLEARN_DATASETS = {
+    "digits": "load_digits",
+    "iris": "load_iris",
+    "wine": "load_wine",
+    "breast_cancer": "load_breast_cancer"
+}
+
+TORCHVISION_DATASETS = {
+    "mnist": "MNIST",
+    "cifar10": "CIFAR10",
+    "cifar100": "CIFAR100",
+    "fashionmnist": "FashionMNIST"
+}
+
+HUGGINGFACE_DATASETS = {
+    "sst2": ("glue", "sst2"),
+    "sst-2": ("glue", "sst2"),
+    "mrpc": ("glue", "mrpc"),
+    "imdb": ("imdb",),
+    "squad": ("squad",)
+}
+```
+
+**Tasks:**
+- [ ] Implement `SklearnDatasetGenerator` (3+ datasets)
+- [ ] Implement `TorchvisionDatasetGenerator` (MNIST, CIFAR10)
+- [ ] Implement `HuggingFaceDatasetGenerator` (SST-2, IMDB)
+- [ ] Update factory with smart selection logic
+- [ ] Add fallback chain: HF → torchvision → sklearn → synthetic
+- [ ] **Test:** Generate notebooks for each dataset type
+- [ ] **Integration:** TextCNN paper → extract → plan → materialize → verify SST-2 dataset code
+
+**Example - Torchvision Generator:**
+```python
+class TorchvisionDatasetGenerator(CodeGenerator):
+    def generate_code(self, plan):
+        return textwrap.dedent(f"""
+        from torchvision import datasets, transforms
+
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,))
+        ])
+
+        train_dataset = datasets.MNIST(
+            root='./data', train=True, download=True, transform=transform
+        )
+
+        # Flatten for sklearn compatibility
+        X_train = train_dataset.data.numpy().reshape(len(train_dataset), -1)
+        y_train = np.array(train_dataset.targets)
+        """).strip()
+```
+
+**Success Criteria:**
+- ✅ Can generate code for 3+ sklearn datasets
+- ✅ Can generate code for 2+ torchvision datasets
+- ✅ Can generate code for 2+ HuggingFace datasets
+- ✅ TextCNN plan materializes with real SST-2 loading code
+- ✅ Falls back to synthetic for unknown datasets
+
+---
+
+### **Phase 3: Smart Model Selection (Week 3)**
+**Goal:** Generate code that builds the RIGHT model based on plan
+
+**Model Registry:**
+```python
+SKLEARN_MODELS = {
+    "logistic": "LogisticRegression",
+    "random_forest": "RandomForestClassifier",
+    "svm": "SVC",
+    "knn": "KNeighborsClassifier"
+}
+
+TORCH_CNN_VARIANTS = {
+    "textcnn": "TextCNN",
+    "cnn": "SimpleCNN"
+}
+
+TORCH_ARCHITECTURES = {
+    "resnet18": ("torchvision.models", "resnet18"),
+    "resnet50": ("torchvision.models", "resnet50")
+}
+```
+
+**Tasks:**
+- [ ] Implement `SklearnModelGenerator` (LogReg, RandomForest, SVM)
+- [ ] Implement `TorchCNNGenerator` (simple CNN for text classification)
+- [ ] Implement `TorchResNetGenerator` (ResNet variants)
+- [ ] Update factory with model selection logic
+- [ ] Map plan.config hyperparams to model params (epochs → max_iter, lr, etc.)
+- [ ] **Test:** Generate notebooks for each model type
+- [ ] **Integration:** ResNet paper → extract → plan → materialize → verify ResNet model code
+
+**Example - PyTorch CNN Generator:**
+```python
+class TorchCNNGenerator(CodeGenerator):
+    def generate_code(self, plan):
+        epochs = plan.config.epochs or 10
+        lr = plan.config.learning_rate or 0.001
+
+        return textwrap.dedent(f"""
+        import torch.nn as nn
+        import torch.optim as optim
+
+        class SimpleCNN(nn.Module):
+            def __init__(self, input_dim, num_classes):
+                super().__init__()
+                self.conv1 = nn.Conv1d(1, 64, kernel_size=3)
+                self.relu = nn.ReLU()
+                self.pool = nn.MaxPool1d(kernel_size=2)
+                self.fc = nn.Linear(64 * (input_dim // 2), num_classes)
+
+            def forward(self, x):
+                x = x.unsqueeze(1)
+                x = self.conv1(x)
+                x = self.relu(x)
+                x = self.pool(x)
+                x = x.view(x.size(0), -1)
+                return self.fc(x)
+
+        model = SimpleCNN(X_train.shape[1], len(set(y_train)))
+        optimizer = optim.Adam(model.parameters(), lr={lr})
+        # ... training loop ...
+        """).strip()
+```
+
+**Success Criteria:**
+- ✅ Can generate code for 3+ sklearn models
+- ✅ Can generate code for PyTorch CNN
+- ✅ Can generate code for ResNet variants
+- ✅ ResNet plan materializes with real ResNet architecture
+- ✅ Hyperparameters from plan.config mapped correctly
+
+---
+
+### **Phase 4: Docker-Ready Preparation (Week 4)**
+**Goal:** Ensure all generators produce Docker-compatible code
+
+**Docker-Ready Patterns:**
+
+1. **Relative Paths Only:**
+```python
+# GOOD
+data_path = Path("./data")
+model_path = Path("./models/checkpoint.pt")
+
+# BAD (breaks in Docker)
+data_path = Path("/home/user/data")
+```
+
+2. **Environment Variable Support:**
+```python
+# In setup cell:
+OFFLINE_MODE = os.environ.get("OFFLINE_MODE", "false") == "true"
+MAX_MEMORY_GB = float(os.environ.get("MAX_MEMORY_GB", "2.0"))
+
+if OFFLINE_MODE:
+    datasets.MNIST(root='./data', download=False)  # Use cache only
+else:
+    datasets.MNIST(root='./data', download=True)
+```
+
+3. **Resource Awareness:**
+```python
+import psutil
+available_mem = psutil.virtual_memory().available / (1024**3)
+if available_mem < MAX_MEMORY_GB * 0.8:
+    raise MemoryError(f"Insufficient memory: {available_mem:.1f}GB")
+```
+
+**Tasks:**
+- [ ] Add environment variable support to all generators
+- [ ] Add resource checks to setup cell generation
+- [ ] Add offline mode support for datasets
+- [ ] Ensure all paths are relative
+- [ ] Create `Dockerfile` for notebook executor (prep for C-RUN-01)
+- [ ] **Test:** Run generated notebooks in Docker container
+- [ ] **Test:** Run with OFFLINE_MODE=true (cached datasets only)
+
+**Files to Modify:**
+- All generator classes (add env var support)
+- `notebook.py` (enhance setup cell with env checks)
+
+**Success Criteria:**
+- ✅ All generated notebooks run in Docker
+- ✅ No hardcoded absolute paths
+- ✅ Environment variables control behavior
+- ✅ Resource limits enforced
+- ✅ Offline mode works (no downloads if cached)
+
+---
+
+#### **Testing Strategy**
+
+**Unit Tests:**
+```python
+# test_dataset_generators.py
+def test_sklearn_digits_dataset():
+    plan = create_test_plan(dataset_name="digits")
+    gen = GeneratorFactory.get_dataset_generator(plan)
+
+    assert isinstance(gen, SklearnDatasetGenerator)
+    code = gen.generate_code(plan)
+    assert "load_digits()" in code
+    assert "SEED" in code  # Determinism
+
+def test_mnist_dataset():
+    plan = create_test_plan(dataset_name="mnist")
+    gen = GeneratorFactory.get_dataset_generator(plan)
+
+    assert isinstance(gen, TorchvisionDatasetGenerator)
+    code = gen.generate_code(plan)
+    assert "datasets.MNIST" in code
+```
+
+**Integration Tests:**
+```python
+# test_real_papers.py
+def test_textcnn_paper_end_to_end():
+    # 1. Extract claims from TextCNN paper
+    claims = extract_paper("1408.5882.pdf")
+
+    # 2. Generate plan
+    plan = generate_plan(claims)
+    assert plan.dataset.name.lower() in ["sst2", "sst-2"]
+    assert "cnn" in plan.model.name.lower()
+
+    # 3. Materialize notebook
+    notebook_bytes = materialize_plan(plan)
+
+    # 4. Verify generated code
+    notebook = nbformat.reads(notebook_bytes)
+    code = "\n".join([cell.source for cell in notebook.cells])
+    assert "glue" in code or "sst2" in code  # HuggingFace dataset
+    assert "Conv" in code  # CNN architecture
+
+    # 5. Execute notebook
+    result = execute_notebook(notebook_bytes)
+    assert result.metrics_text  # Produced metrics.json
+```
+
+---
+
+#### **Week-by-Week Roadmap**
+
+**Week 1: Foundation**
+- Mon-Tue: Create package structure, define ABCs
+- Wed-Thu: Extract current logic into generators
+- Fri: Update notebook.py, run tests
+- **Deliverable:** Modular codebase, all tests pass
+
+**Week 2: Datasets**
+- Mon: Implement sklearn generator
+- Tue: Implement torchvision generator
+- Wed: Implement HuggingFace generator
+- Thu: Update factory, add fallback logic
+- Fri: Integration test with TextCNN paper
+- **Deliverable:** Real dataset loading works
+
+**Week 3: Models**
+- Mon: Implement enhanced sklearn models
+- Tue: Implement PyTorch CNN
+- Wed: Implement ResNet generator
+- Thu: Update factory, map hyperparameters
+- Fri: Integration test with ResNet paper
+- **Deliverable:** Real model architectures work
+
+**Week 4: Docker Prep**
+- Mon-Tue: Add env var support to all generators
+- Wed: Add resource checks, offline mode
+- Thu: Create Dockerfile, test in container
+- Fri: Documentation, final integration tests
+- **Deliverable:** Docker-ready notebooks
+
+---
+
+#### **Success Metrics**
+
+**Phase 1 Complete When:**
+- ✅ Code is modular (generators in separate files)
+- ✅ All existing tests pass
+- ✅ Generated notebooks identical to before (no regression)
+
+**Phase 2 Complete When:**
+- ✅ TextCNN paper → plan → materialize → shows `load_dataset("glue", "sst2")` in code
+- ✅ Can generate 3+ sklearn, 2+ torchvision, 2+ HF datasets
+- ✅ Unknown datasets fall back to synthetic gracefully
+
+**Phase 3 Complete When:**
+- ✅ ResNet paper → plan → materialize → shows `resnet50()` in code
+- ✅ Can generate 3+ sklearn models, PyTorch CNN, ResNet
+- ✅ plan.config.epochs/lr mapped to model params
+
+**Phase 4 Complete When:**
+- ✅ All notebooks run in Docker container
+- ✅ `OFFLINE_MODE=true` works (no downloads)
+- ✅ Resource checks prevent OOM errors
+- ✅ Dockerfile ready for C-RUN-01
+
+---
+
+#### **Immediate First Steps (This Week)**
+
+```bash
+# 1. Create folder structure
+mkdir -p api/app/materialize/generators
+touch api/app/materialize/generators/{__init__,base,dataset,model,factory}.py
+
+# 2. Define base CodeGenerator ABC (generators/base.py)
+# 3. Extract current logic into SyntheticDatasetGenerator
+# 4. Create GeneratorFactory (returns synthetic for now)
+# 5. Update notebook.py to use factory
+# 6. Run tests: pytest api/tests/test_plans_materialize.py
+```
+
+**Estimated Time:** 2-3 days for Phase 1 refactor
+
+---
+
+#### **Why This is #1 Priority**
+
+**Current State:**
+- ✅ Extraction works (Session 4 fix)
+- ✅ Database ready (Schema v1)
+- ✅ Plan generation works
+- ❌ **Notebooks are 100% fake** ← BLOCKING ISSUE
+
+**What This Unblocks:**
+- ✅ End-to-end testing with real papers
+- ✅ Meaningful sandbox executor (C-RUN-01)
+- ✅ Accurate gap analysis (C-REPORT-01)
+- ✅ Demo-ready system (show real reproduction)
+
+**Priority Order:**
+1. Complete extraction integration (claims to DB) - 2 days
+2. End-to-end pipeline testing - 3 days
+3. Improve extraction quality - 1 week
+4. **🔥 Real Notebook Generation (THIS)** - 4 weeks ← CRITICAL PATH
+5. Real Sandbox Executor - 2 weeks (depends on #4)
+6. Gap Analysis - 1 week (depends on #5)
+
+---
+
 ## 🚀 Near-Term Features (Next 2-4 Weeks)
 
-### **4. Real Sandbox Executor (C-RUN-01)**
+### **5. Real Sandbox Executor (C-RUN-01)**
+**Prerequisites:** ✅ C-NOTEBOOK-01 complete (need real notebooks first)
 **Status:** Currently using stub with simulated output
 **Why Critical:** Core value proposition is reproducible execution
 
@@ -95,7 +560,8 @@ C. **E2B sandboxes**
 
 ---
 
-### **5. Gap Analysis & Reporting (C-REPORT-01)**
+### **6. Gap Analysis & Reporting (C-REPORT-01)**
+**Prerequisites:** ✅ C-RUN-01 complete (need real run results first)
 **Status:** Database schema ready (`evals` table), logic not implemented
 
 **Purpose:** Quantify reproduction success
@@ -130,7 +596,7 @@ C. **E2B sandboxes**
 
 ---
 
-### **6. Kid-Mode Storybook Integration (C-KID-01)**
+### **7. Kid-Mode Storybook Integration (C-KID-01)**
 **Status:** Agent definition ready, generation logic implemented, needs integration
 
 **Tasks:**
@@ -146,7 +612,7 @@ C. **E2B sandboxes**
 
 ## 📊 Medium-Term Improvements (1-2 Months)
 
-### **7. Multi-Tenancy & Security**
+### **8. Multi-Tenancy & Security**
 **Status:** RLS disabled for MVP, schema supports `created_by` fields
 
 **Tasks:**
@@ -158,7 +624,7 @@ C. **E2B sandboxes**
 
 ---
 
-### **8. Web UI (Basic MVP)**
+### **9. Web UI (Basic MVP)**
 **Status:** Placeholder React app exists, not functional
 
 **Core Flows:**
@@ -185,7 +651,7 @@ C. **E2B sandboxes**
 
 ---
 
-### **9. Planner Enhancements**
+### **10. Planner Enhancements**
 **Status:** Working but can be smarter
 
 **Improvements:**
@@ -197,7 +663,7 @@ C. **E2B sandboxes**
 
 ---
 
-### **10. Observability & Monitoring**
+### **11. Observability & Monitoring**
 **Status:** Basic tracing exists, needs expansion
 
 **Tasks:**
@@ -211,25 +677,25 @@ C. **E2B sandboxes**
 
 ## 🔮 Long-Term Vision (3-6 Months)
 
-### **11. Multi-Paper Reproduction**
+### **12. Multi-Paper Reproduction**
 Compare reproduction quality across papers:
 - Leaderboard of most reproducible papers
 - Identify common failure patterns
 - Build dataset of reproduction results
 
-### **12. Citation Network Analysis**
+### **13. Citation Network Analysis**
 - Extract paper citations from PDFs
 - Build dependency graph (Paper A cites Paper B)
 - Reproduce entire citation chains
 - Quantify reproducibility debt
 
-### **13. Automated Paper Discovery**
+### **14. Automated Paper Discovery**
 - Scrape arXiv for new papers
 - Auto-ingest papers with code availability
 - Pre-extract claims for quick browsing
 - Alert on papers in specific domains
 
-### **14. Collaborative Features**
+### **15. Collaborative Features**
 - Share plans/notebooks between users
 - Community-contributed plan improvements
 - Upvote/downvote plan quality
