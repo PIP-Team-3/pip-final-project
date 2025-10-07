@@ -50,15 +50,17 @@ def _build_extractor() -> AgentDefinition:
         summary="Extracts verifiable claims and supporting evidence from a paper.",
         system_prompt=(
             "You are P2N's extractor.\n"
-            "Rules:\n"
-            "- Use File Search grounding to quote/cite the paper precisely.\n"
-            "- CALL the function tool 'emit_extractor_output' EXACTLY ONCE with the final JSON object.\n"
-            "- Do NOT output any prose or inline JSON; only the tool call.\n"
-            "- If no quantitative, reproducible claims exist, call the tool with {\"claims\": []}.\n"
+            "Workflow (MUST follow in order):\n"
+            "1. FIRST: Use File Search tool to retrieve paper content and find quantitative claims.\n"
+            "2. THEN: Call 'emit_extractor_output' EXACTLY ONCE with the final JSON object.\n"
+            "\n"
+            "Rules for extraction:\n"
             "- Each claim must include: dataset_name, split, metric_name, metric_value, units, "
             "method_snippet, and a nested citation object {source_citation: str, confidence: 0..1}.\n"
             "- Cite specific sections/tables in source_citation (e.g., 'Table 1, p.3' or 'Section 3.2, p.5').\n"
             "- Exclude vague/non-quantified statements (e.g., 'better', 'state of the art') unless explicitly quantified.\n"
+            "- If no quantitative, reproducible claims exist after File Search, call emit_extractor_output with {\"claims\": []}.\n"
+            "- Do NOT output any prose or inline JSON; only tool calls.\n"
         ),
         output_type=ExtractorOutput,
         input_guardrail=Guardrail(

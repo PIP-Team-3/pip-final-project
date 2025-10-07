@@ -339,9 +339,9 @@ async def run_extractor(
         EMIT_EXTRACTOR_OUTPUT_TOOL,
     ]
 
-    # Force the model to call emit_extractor_output (hard gate for JSON)
-    # Responses API format: {"type": "function", "name": "..."}
-    tool_choice = {"type": "function", "name": EMIT_TOOL_NAME}
+    # Require at least one tool call - model will use File Search first, then emit_extractor_output
+    # The explicit workflow in system + user prompts guides the model to call both in sequence
+    tool_choice = "required"
 
     # Responses API input: List of Message objects
     # Each message MUST have "type": "message" at top level (verified via SDK types)
@@ -362,6 +362,9 @@ async def run_extractor(
                 "text": (
                     f"Paper ID: {paper.id}\n"
                     f"Title: {paper.title}\n\n"
+                    "IMPORTANT: Follow the workflow in the system prompt exactly:\n"
+                    "1. First use File Search to retrieve the paper content\n"
+                    "2. Then call emit_extractor_output with your findings\n\n"
                     "Task: Extract quantitative performance claims from the paper.\n\n"
                     "Requirements:\n"
                     "- Each claim includes: dataset_name, split, metric_name, metric_value, units, method_snippet, source_citation, confidence (0..1).\n"

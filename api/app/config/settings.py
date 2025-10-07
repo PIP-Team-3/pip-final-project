@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Legacy single model (deprecated - use role-specific models below)
     openai_model: str = "gpt-4o"
     openai_temperature: float = 0.1
-    openai_max_output_tokens: int = 1024
+    openai_max_output_tokens: int = 4096  # Increased from 1024 to handle multiple claims extraction
     openai_max_turns: int = 6
     openai_tracing_enabled: bool = True
 
