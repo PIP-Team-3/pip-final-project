@@ -1,25 +1,665 @@
-# Database (Schema v0) Reference
+# Database (Schema v1 - Production) Reference
 
-The P2N backend currently operates under the �No-Rules v0� posture:
+The P2N backend operates under **Schema v1** with full referential integrity and constraints, deployed on 2025-10-04.
 
-- Every table exposes `PRIMARY KEY(id)` only.
-- **No** foreign keys, unique constraints, defaults, triggers, or RLS policies.
-- Application code MUST supply every field explicitly (UUIDs, timestamps, status columns, env hashes, etc.).
-- Logical relationships (e.g., `plans.paper_id`, `runs.plan_id`) are enforced in code/tests, not in the database.
+## Schema Features
 
-## Tables In Use
-| Table | Purpose | Notes |
-|-------|---------|-------|
-| `papers` | Stored metadata for ingested PDFs. | Contains vector store ID + storage path. |
-| `plans` | Plan JSON v1.1 payloads and env hashes. | `plan_json` persisted verbatim as `jsonb`. |
-| `runs` | Execution metadata (stub execution for now). | Status values: `running`, `completed`, `failed`. |
-| `run_events` | SSE events persisted for replay. | JSON payload per event. |
-| `run_series` | Metric time series. | Inserted by run stub when metrics stream. |
+### Referential Integrity
+- **Foreign keys** with `ON DELETE CASCADE` for automatic cleanup (e.g., deleting a paper cascades to all claims, plans, runs, etc.)
+- **CHECK constraints** for valid states:
+  - Status enums: `papers.status IN ('ready', 'processing', 'failed')`
+  - Confidence ranges: `claims.confidence BETWEEN 0.0 AND 1.0`
+  - Budget limits: `plans.budget_minutes BETWEEN 1 AND 120`
+  - Timing constraints: `runs.completed_at >= runs.started_at >= runs.created_at`
 
-Draft schema definitions live in `sql/schema_v0.sql` and helper scripts (`drop_all_v0.sql`, etc.). Use them as reference only�**do not** apply schema changes without the dedicated �Schema v1 hardening� prompt.
+### Data Quality
+- **UNIQUE constraints** to prevent duplicates:
+  - `papers.pdf_sha256` - Prevents re-uploading same PDF
+  - `papers.vector_store_id` - One vector store per paper
+  - `run_events.run_id, seq` - Monotonic event sequences
+  - Partial unique indexes on assets (one notebook per plan, one metrics file per run, etc.)
+- **NOT NULL** enforced where application always provides values (ids, timestamps, core fields)
+- **DEFAULT NOW()** on all `created_at` and `updated_at` timestamps
+
+### Performance
+- **Indexes** on all foreign keys for fast joins
+- **Partial indexes** on conditional queries (e.g., `papers.status WHERE status != 'ready'`)
+- **Composite indexes** for common query patterns (e.g., `runs(paper_id, status)`)
+- **JSONB** columns for flexible nested data with GIN indexes available if needed
+
+### Automation
+- **Triggers** for consistency:
+  - Auto-update `updated_at` on modification (papers, plans, storyboards)
+  - Auto-calculate `runs.duration_sec` from start/completion timestamps
+- **pgcrypto extension** for `gen_random_uuid()` default values
+
+### Security & Access Control
+- **RLS (Row Level Security) DISABLED** for MVP - Service role has full access
+- **GRANT ALL** to `service_role` on all tables, sequences, and functions
+- **Future-proofed** with `ALTER DEFAULT PRIVILEGES` for new objects
+
+---
+
+## Current Schema
+
+**Active schema:** `schema_v1_nuclear_with_grants.sql`
+**Deployed:** 2025-10-04
+**Last Updated:** 2025-10-06
+
+This is the production-ready schema with full grants for service_role. Run the entire file after `DROP SCHEMA public CASCADE` for clean deploys.
+
+---
+
+## Core Tables
+
+### 1. `papers` - Ingested Research Papers
+**Purpose:** Store metadata for uploaded PDF papers with OpenAI vector stores for File Search grounding.
+
+**Key Columns:**
+- `id` (uuid, PK) - Paper unique identifier
+- `title` (text, NOT NULL) - Paper title
+- `source_url`, `doi`, `arxiv_id` (text, optional) - External identifiers
+- `pdf_storage_path` (text, NOT NULL) - Supabase Storage path (must start with `papers/`)
+- `vector_store_id` (text, NOT NULL, UNIQUE) - OpenAI vector store ID (e.g., `vs_68e332...`)
+- `pdf_sha256` (text, NOT NULL, UNIQUE) - SHA256 hash for duplicate detection
+- `status` (text, NOT NULL, default 'ready') - Enum: `ready`, `processing`, `failed`
+- `created_by` (uuid, optional) - For future multi-tenant support
+- `created_at`, `updated_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (pdf_storage_path LIKE 'papers/%')`
+- `CHECK (status IN ('ready', 'processing', 'failed'))`
+- `UNIQUE (pdf_sha256)` - Prevent duplicate PDFs
+- `UNIQUE (vector_store_id)` - One vector store per paper
+
+**Indexes:**
+- `papers_created_at_idx` - Sorted by creation date
+- `papers_status_idx` - Partial index on non-ready papers
+
+**Relationships:**
+- One-to-many with `claims`, `plans`, `storyboards`, `assets`
+- Cascade deletes to all children
+
+---
+
+### 2. `claims` - Extracted Performance Claims
+**Purpose:** Store quantitative claims extracted by the Extractor agent (dataset, metric, value, citation).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `paper_id` (uuid, NOT NULL, FK → papers) - Parent paper
+- `dataset_name` (text, optional) - Dataset name (e.g., "SST-2", "ImageNet")
+- `split` (text, optional) - Train/val/test split
+- `metric_name` (text, NOT NULL) - Metric name (e.g., "accuracy", "F1", "BLEU")
+- `metric_value` (numeric, NOT NULL) - Numeric value (e.g., 0.87, 95.2)
+- `units` (text, optional) - Units (e.g., "%", "seconds", "BLEU score")
+- `method_snippet` (text, optional) - Brief method description
+- `source_citation` (text, NOT NULL) - Citation (e.g., "Table 1, p.3", "Section 3.2, p.5")
+- `confidence` (numeric, NOT NULL) - Confidence score 0.0-1.0
+- `created_by` (uuid, optional)
+- `created_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (confidence >= 0.0 AND confidence <= 1.0)`
+- `ON DELETE CASCADE` from papers
+
+**Indexes:**
+- `claims_paper_id_idx` - Fast lookup by paper
+- `claims_confidence_idx` - Sorted by confidence (DESC)
+
+**Relationships:**
+- Many-to-one with `papers`
+
+---
+
+### 3. `plans` - Generated Execution Plans
+**Purpose:** Store Plan v1.1 JSON documents generated by the Planner agent.
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `paper_id` (uuid, NOT NULL, FK → papers) - Parent paper
+- `version` (text, NOT NULL, default '1.1') - Plan schema version
+- `plan_json` (jsonb, NOT NULL) - Complete Plan v1.1 document (dataset, model, config, metrics)
+- `env_hash` (text, optional) - SHA256 of sorted requirements.txt (NULL until materialized)
+- `budget_minutes` (int, NOT NULL, default 20) - Execution time limit
+- `status` (text, NOT NULL, default 'draft') - Enum: `draft`, `ready`, `failed`
+- `created_by` (uuid, optional)
+- `created_at`, `updated_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (budget_minutes > 0 AND budget_minutes <= 120)`
+- `CHECK (status IN ('draft', 'ready', 'failed'))`
+- `ON DELETE CASCADE` from papers
+
+**Indexes:**
+- `plans_paper_id_idx` - Fast lookup by paper
+- `plans_env_hash_idx` - Partial index for materialized plans
+- `plans_created_at_idx` - Sorted by creation date
+
+**Relationships:**
+- Many-to-one with `papers`
+- One-to-many with `runs`, `assets`
+
+---
+
+### 4. `runs` - Notebook Execution Runs
+**Purpose:** Track execution metadata for notebook runs (deterministic, CPU-only, seed-controlled).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `plan_id` (uuid, NOT NULL, FK → plans) - Parent plan
+- `paper_id` (uuid, NOT NULL, FK → papers) - Parent paper (for easy querying)
+- `env_hash` (text, NOT NULL) - Copied from plan at runtime (enforces materialization)
+- `seed` (int, NOT NULL, default 42) - Random seed for reproducibility
+- `status` (text, NOT NULL, default 'queued') - Enum: `queued`, `running`, `succeeded`, `failed`, `timeout`, `cancelled`
+- `created_at` (timestamptz, NOT NULL, DEFAULT NOW())
+- `started_at` (timestamptz, optional) - When execution started
+- `completed_at` (timestamptz, optional) - When execution finished
+- `duration_sec` (int, optional) - Auto-calculated via trigger
+- `error_code` (text, optional) - Typed error code (e.g., `E_GPU_REQUESTED`, `E_RUN_TIMEOUT`)
+- `error_message` (text, optional) - Human-readable error
+
+**Constraints:**
+- `CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'timeout', 'cancelled'))`
+- `CHECK (started_at IS NULL OR started_at >= created_at)`
+- `CHECK (completed_at IS NULL OR completed_at >= started_at)`
+- `CHECK (duration_sec IS NULL OR duration_sec >= 0)`
+- `ON DELETE CASCADE` from plans and papers
+
+**Indexes:**
+- `runs_paper_id_status_idx` - Composite for dashboard queries
+- `runs_plan_id_idx` - Fast lookup by plan
+- `runs_status_idx` - Filter by status
+- `runs_paper_completed_idx` - Latest runs per paper
+- `runs_created_at_idx` - Sorted by creation date
+
+**Relationships:**
+- Many-to-one with `plans` and `papers`
+- One-to-many with `run_events`, `run_series`, `assets`, `evals`
+- One-to-one with `storyboards` (optional)
+
+**Triggers:**
+- `calculate_run_duration()` - Auto-calculate `duration_sec` from timestamps
+
+---
+
+### 5. `run_events` - SSE Event Stream
+**Purpose:** Append-only log of SSE events emitted during run execution (for replay and debugging).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `run_id` (uuid, NOT NULL, FK → runs) - Parent run
+- `seq` (bigint, NOT NULL) - Monotonic sequence number per run
+- `ts` (timestamptz, NOT NULL, DEFAULT NOW()) - Event timestamp
+- `event_type` (text, NOT NULL) - Event type enum
+- `payload` (jsonb, NOT NULL) - Event payload (arbitrary JSON)
+
+**Constraints:**
+- `CHECK (event_type IN ('stage_update', 'log_line', 'progress', 'metric_update', 'sample_pred', 'error'))`
+- `UNIQUE (run_id, seq)` - Enforce monotonic sequence
+- `ON DELETE CASCADE` from runs
+
+**Indexes:**
+- `run_events_run_id_seq_idx` - Composite for sequential replay
+- `run_events_run_id_ts_idx` - Composite for time-based queries
+- `run_events_type_idx` - Filter by event type
+
+**Relationships:**
+- Many-to-one with `runs`
+
+---
+
+### 6. `run_series` - Metric Time Series
+**Purpose:** Store numeric time series data for metrics (e.g., accuracy over epochs, loss curves).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `run_id` (uuid, NOT NULL, FK → runs) - Parent run
+- `metric` (text, NOT NULL) - Metric name (e.g., "accuracy", "loss", "f1")
+- `split` (text, optional) - Data split (e.g., "train", "val", "test")
+- `step` (int, optional) - Epoch or iteration number (NULL for terminal/one-shot metrics)
+- `value` (numeric, NOT NULL) - Metric value
+- `ts` (timestamptz, NOT NULL, DEFAULT NOW()) - Timestamp
+
+**Constraints:**
+- `UNIQUE (run_id, metric, split, step)` - One value per (run, metric, split, step)
+- `ON DELETE CASCADE` from runs
+
+**Indexes:**
+- `run_series_run_metric_step_idx` - Composite for time series queries
+- `run_series_run_id_idx` - Fast lookup by run
+
+**Relationships:**
+- Many-to-one with `runs`
+
+---
+
+### 7. `storyboards` - Kid-Mode Explanations
+**Purpose:** Store "Kid-Mode" storyboard JSON (5-7 pages with required alt-text for accessibility).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `paper_id` (uuid, NOT NULL, FK → papers) - Parent paper
+- `run_id` (uuid, optional, FK → runs) - Associated run (NULL until run completes)
+- `storyboard_json` (jsonb, NOT NULL) - Complete storyboard document (pages[], glossary[], alt-text)
+- `storage_path` (text, NOT NULL) - Supabase Storage path (must start with `storyboards/`)
+- `created_at`, `updated_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (storage_path LIKE 'storyboards/%')`
+- `ON DELETE CASCADE` from papers
+- `ON DELETE SET NULL` from runs
+
+**Indexes:**
+- `storyboards_paper_id_idx` - Fast lookup by paper
+- `storyboards_run_id_idx` - Partial index for storyboards with runs
+
+**Relationships:**
+- Many-to-one with `papers`
+- One-to-one with `runs` (optional)
+
+**Triggers:**
+- `update_updated_at()` - Auto-update timestamp on modification
+
+---
+
+### 8. `assets` - Storage Object Links
+**Purpose:** Track Supabase Storage objects (PDFs, notebooks, requirements.txt, metrics, logs, events).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `paper_id` (uuid, optional, FK → papers) - Parent paper
+- `run_id` (uuid, optional, FK → runs) - Parent run
+- `plan_id` (uuid, optional, FK → plans) - Parent plan
+- `kind` (text, NOT NULL) - Asset type enum
+- `storage_path` (text, NOT NULL) - Supabase Storage path
+- `size_bytes` (bigint, optional) - File size
+- `checksum` (text, optional) - SHA256 or similar
+- `created_by` (uuid, optional)
+- `created_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (kind IN ('pdf', 'notebook', 'requirements', 'metrics', 'logs', 'events', 'storyboard'))`
+- `CHECK` - Exactly one parent: `(paper_id XOR run_id XOR plan_id)`
+- `ON DELETE CASCADE` from papers, runs, plans
+
+**Partial Unique Indexes** (prevent duplicate assets):
+- `assets_plan_notebook_uniq` - One notebook per plan
+- `assets_plan_requirements_uniq` - One requirements.txt per plan
+- `assets_run_metrics_uniq` - One metrics.json per run
+- `assets_run_logs_uniq` - One logs file per run
+- `assets_run_events_uniq` - One events.jsonl per run
+- `assets_paper_pdf_uniq` - One PDF per paper
+
+**Indexes:**
+- `assets_paper_id_idx` - Partial index for paper assets
+- `assets_run_id_idx` - Partial index for run assets
+- `assets_plan_id_idx` - Partial index for plan assets
+- `assets_kind_idx` - Filter by asset type
+- `assets_storage_path_idx` - Lookup by storage path
+
+**Relationships:**
+- Many-to-one with `papers`, `runs`, or `plans` (exactly one)
+
+---
+
+### 9. `evals` - Reproduction Gap Analysis
+**Purpose:** Store comparisons between claimed metrics (from paper) and observed metrics (from run).
+
+**Key Columns:**
+- `id` (uuid, PK)
+- `paper_id` (uuid, NOT NULL, FK → papers) - Parent paper
+- `run_id` (uuid, NOT NULL, FK → runs) - Parent run
+- `metric_name` (text, NOT NULL) - Metric being compared
+- `claimed` (numeric, NOT NULL) - Claimed value from paper
+- `observed` (numeric, NOT NULL) - Observed value from run
+- `gap_percent` (numeric, NOT NULL) - Percent gap: `(observed - claimed) / max(|claimed|, 1e-9) * 100`
+- `gap_abs` (numeric, NOT NULL) - Absolute gap: `observed - claimed`
+- `tolerance` (numeric, optional) - Acceptable tolerance range
+- `direction` (text, optional) - Optimization direction: `maximize`, `minimize`
+- `created_at` (timestamptz, NOT NULL, DEFAULT NOW())
+
+**Constraints:**
+- `CHECK (direction IN ('maximize', 'minimize'))`
+- `UNIQUE (run_id, metric_name)` - One eval per (run, metric)
+- `ON DELETE CASCADE` from papers and runs
+
+**Indexes:**
+- `evals_paper_id_idx` - Fast lookup by paper
+- `evals_run_id_idx` - Fast lookup by run
+- `evals_gap_idx` - Sorted by absolute gap (DESC) for finding largest discrepancies
+
+**Relationships:**
+- Many-to-one with `papers` and `runs`
+
+---
+
+## Helper Views
+
+### `latest_runs`
+**Purpose:** Latest successful run per paper (for dashboard queries).
+
+**Definition:**
+```sql
+SELECT DISTINCT ON (paper_id)
+    id AS run_id,
+    paper_id,
+    plan_id,
+    status,
+    completed_at,
+    duration_sec
+FROM runs
+WHERE status = 'succeeded'
+ORDER BY paper_id, completed_at DESC NULLS LAST;
+```
+
+**Use Cases:**
+- Dashboard: show latest results per paper
+- API: fetch most recent successful run for comparison
+
+---
+
+### `paper_summary`
+**Purpose:** Aggregate statistics per paper (plan count, run count, success count, latest run time).
+
+**Definition:**
+```sql
+SELECT
+    p.id,
+    p.title,
+    p.created_at,
+    p.status,
+    COUNT(DISTINCT pl.id) AS plan_count,
+    COUNT(DISTINCT r.id) AS run_count,
+    COUNT(DISTINCT r.id) FILTER (WHERE r.status = 'succeeded') AS succeeded_run_count,
+    MAX(r.completed_at) AS latest_run_at
+FROM papers p
+LEFT JOIN plans pl ON p.id = pl.paper_id
+LEFT JOIN runs r ON p.id = r.paper_id
+GROUP BY p.id;
+```
+
+**Use Cases:**
+- Dashboard: show paper activity summary
+- Reports: aggregate success rates
+
+---
+
+## Functions & Triggers
+
+### `update_updated_at()`
+**Purpose:** Auto-update `updated_at` timestamp on row modification.
+
+**Definition:**
+```sql
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+**Triggers:**
+- `papers_updated_at` - BEFORE UPDATE ON papers
+- `plans_updated_at` - BEFORE UPDATE ON plans
+- `storyboards_updated_at` - BEFORE UPDATE ON storyboards
+
+**Behavior:** Automatically sets `updated_at = NOW()` whenever a row is updated.
+
+---
+
+### `calculate_run_duration()`
+**Purpose:** Auto-calculate `duration_sec` from start/completion timestamps.
+
+**Definition:**
+```sql
+CREATE OR REPLACE FUNCTION calculate_run_duration()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.completed_at IS NOT NULL AND NEW.started_at IS NOT NULL THEN
+        NEW.duration_sec = EXTRACT(EPOCH FROM (NEW.completed_at - NEW.started_at))::int;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+**Triggers:**
+- `runs_duration` - BEFORE INSERT OR UPDATE ON runs
+
+**Behavior:** Automatically calculates and sets `duration_sec` when both `started_at` and `completed_at` are present.
+
+---
+
+## Key Design Decisions
+
+### 1. UUIDs for Primary Keys
+- **Generated via:** `gen_random_uuid()` (pgcrypto extension)
+- **Why:** Distributed-friendly, no sequence contention, URL-safe
+- **Constraint:** All tables use `uuid` type for `id` columns
+
+### 2. JSONB for Complex Structures
+- **Used in:** `plans.plan_json`, `storyboards.storyboard_json`, `run_events.payload`
+- **Why:** Flexible schema for nested data, validated by application layer
+- **Future:** Can add GIN indexes for fast JSONB queries if needed
+
+### 3. Text IDs for External Systems
+- **Used in:** `papers.vector_store_id` (OpenAI vector stores like `vs_68e332...`)
+- **Why:** External system IDs are strings, not UUIDs
+- **Constraint:** UNIQUE to prevent duplication
+
+### 4. Cascade Deletes for Referential Integrity
+- **Pattern:** All foreign keys use `ON DELETE CASCADE`
+- **Why:** Deleting a paper automatically deletes all claims, plans, runs, events, series, assets
+- **Safety:** No orphaned data, simplified cleanup
+
+### 5. Partial Unique Indexes on Assets
+- **Pattern:** `CREATE UNIQUE INDEX assets_plan_notebook_uniq ON assets(plan_id) WHERE kind = 'notebook' AND plan_id IS NOT NULL`
+- **Why:** Prevent duplicate assets per parent (one notebook per plan, one metrics file per run, etc.)
+- **Benefit:** Enforced at DB level, not just application logic
+
+### 6. Status Enums via CHECK Constraints
+- **Pattern:** `CHECK (status IN ('ready', 'processing', 'failed'))`
+- **Why:** PostgreSQL ENUMs require migrations to add values; CHECK constraints are easier to modify
+- **Tradeoff:** Less type safety, but more flexible
+
+### 7. Deterministic Execution (CPU-only, seed-controlled)
+- **Pattern:** `runs.seed` defaults to 42, no GPU support
+- **Why:** Reproducibility is the core mission; GPU non-determinism breaks verification
+- **Future:** May add GPU support with strict determinism policies
+
+### 8. Append-Only Event Log
+- **Pattern:** `run_events` with monotonic `seq` and UNIQUE constraint
+- **Why:** Immutable audit trail for debugging and replay
+- **Performance:** Indexed for fast sequential reads
+
+### 9. Time Series Optimization
+- **Pattern:** `run_series` with UNIQUE constraint on (run, metric, split, step)
+- **Why:** Efficient storage for metrics over epochs (e.g., accuracy curves)
+- **Future:** Consider partitioning by time for large datasets
+
+### 10. RLS Disabled for MVP
+- **Current:** Service role has full CRUD access, no row-level policies
+- **Why:** Single-tenant MVP, service role trusted
+- **Future:** Enable RLS with user-based policies for multi-tenancy
+
+---
 
 ## Usage Guidelines
 
-- Prefer migrations written as idempotent SQL files in this directory; reference them in the infrastructure scripts when IaC is introduced.
-- Keep test fixtures in Python (pytest) so the database remains consistent with application-level behaviour.
-- Any future hardening (FK/RLS/indexes) must be coordinated with the dedicated prompt; until then, treat the database as �strictly soft-validated� by the API layer.
+### Migrations
+- **Approach:** Idempotent SQL files in this directory
+- **Deployment:** Run entire `schema_v1_nuclear_with_grants.sql` after `DROP SCHEMA public CASCADE`
+- **Rationale:** "Nuclear" approach ensures clean slate, no drift from incremental migrations
+
+### Service Role Access
+- **GRANT ALL** to `service_role` on all tables, sequences, and functions
+- **Future-proofed:** `ALTER DEFAULT PRIVILEGES` ensures new objects inherit grants
+- **Security:** Service role key is secret, stored in `.env`, never committed to git
+
+### RLS (Row Level Security)
+- **Current:** Disabled for MVP (all tables have `ALTER TABLE ... DISABLE ROW LEVEL SECURITY`)
+- **Future:** Enable RLS with policies like:
+  ```sql
+  ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY papers_select ON papers FOR SELECT USING (created_by = auth.uid());
+  ```
+- **Multi-tenancy:** User-based isolation via RLS policies
+
+### Schema Changes
+- **Process:**
+  1. Update `schema_v1_nuclear_with_grants.sql`
+  2. Backup production data
+  3. Run `DROP SCHEMA public CASCADE; \i schema_v1_nuclear_with_grants.sql`
+  4. Restore data (if needed)
+- **Rationale:** Simple, auditable, no complex migration chains
+
+### Duplicate Detection
+- **Papers:** `pdf_sha256` UNIQUE constraint prevents re-uploading same PDF
+- **Plans:** `env_hash` index enables reuse of materialized environments
+- **Assets:** Partial unique indexes prevent duplicate artifacts per parent
+
+### Performance Tuning
+- **Indexes:** Already optimized for common query patterns
+- **Future:** Monitor `pg_stat_user_tables` for missing indexes
+- **JSONB:** Add GIN indexes if querying nested fields frequently
+
+---
+
+## Schema Files
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `schema_v1_nuclear_with_grants.sql` | **CURRENT PRODUCTION SCHEMA** - Full v1 with grants | ✅ Active |
+| `schema_v1_nuclear.sql` | Base v1 schema (no grants section) | 📦 Reference |
+| `schema_v0.sql` | Legacy no-constraints schema | ⚠️ DEPRECATED |
+
+### Deployment Instructions
+
+**For clean deployment (recommended):**
+```bash
+# Connect to Supabase
+psql $DATABASE_URL
+
+# Nuclear option: drop everything
+DROP SCHEMA public CASCADE;
+
+# Recreate schema with grants
+\i sql/schema_v1_nuclear_with_grants.sql
+
+# Verify
+\dt
+\df
+```
+
+**For upgrades from v0 (use with caution):**
+1. Backup all data: `pg_dump -Fc $DATABASE_URL > backup.dump`
+2. Run nuclear deploy as above
+3. Restore data with schema mapping if needed
+
+---
+
+## Future Upgrades (Roadmap)
+
+### 1. Multi-Tenancy (v1.1)
+- **Enable RLS** with user-based policies
+- **Add `user_id` columns** for ownership tracking
+- **Implement policies:**
+  ```sql
+  CREATE POLICY papers_select ON papers FOR SELECT USING (created_by = auth.uid());
+  CREATE POLICY plans_insert ON plans FOR INSERT WITH CHECK (created_by = auth.uid());
+  ```
+- **API:** Add authentication middleware, pass user context to queries
+
+### 2. Soft Deletes (v1.2)
+- **Add `deleted_at` columns** to all tables
+- **Update queries** to filter `WHERE deleted_at IS NULL`
+- **Benefits:** Audit trails, data recovery, compliance
+
+### 3. Partitioning (v1.3)
+- **Partition `run_events`** by time (monthly or quarterly)
+- **Partition `run_series`** by time (monthly)
+- **Benefits:** Improved query performance, easier archival
+- **Example:**
+  ```sql
+  CREATE TABLE run_events_2025_10 PARTITION OF run_events
+  FOR VALUES FROM ('2025-10-01') TO ('2025-11-01');
+  ```
+
+### 4. Materialized Views (v1.4)
+- **Cache expensive aggregations:**
+  ```sql
+  CREATE MATERIALIZED VIEW dashboard_stats AS
+  SELECT COUNT(*) AS total_papers, AVG(succeeded_run_count) AS avg_success_rate
+  FROM paper_summary;
+  ```
+- **Refresh strategy:** Cron job or trigger-based
+- **Benefits:** Fast dashboard loads, reduced DB load
+
+### 5. Full-Text Search (v1.5)
+- **Add `tsvector` columns** to papers for title/abstract search
+- **Create GIN indexes** for fast full-text queries
+- **Example:**
+  ```sql
+  ALTER TABLE papers ADD COLUMN search_vector tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', title)) STORED;
+  CREATE INDEX papers_search_idx ON papers USING GIN(search_vector);
+  ```
+
+### 6. Audit Log (v2.0)
+- **Create `audit_log` table** with `(table_name, row_id, operation, old_data, new_data, changed_by, changed_at)`
+- **Add triggers** on all tables to log changes
+- **Benefits:** Compliance, debugging, rollback capability
+
+---
+
+## Appendix: Status Enums
+
+### `papers.status`
+- `ready` - Paper successfully ingested, vector store ready
+- `processing` - Ingestion in progress
+- `failed` - Ingestion failed
+
+### `plans.status`
+- `draft` - Plan generated but not materialized
+- `ready` - Plan materialized (notebook + requirements.txt created)
+- `failed` - Materialization failed
+
+### `runs.status`
+- `queued` - Run created, awaiting execution
+- `running` - Execution in progress
+- `succeeded` - Execution completed successfully
+- `failed` - Execution failed (error_code + error_message set)
+- `timeout` - Execution exceeded budget_minutes
+- `cancelled` - User cancelled execution
+
+### `run_events.event_type`
+- `stage_update` - Run stage changed (e.g., "training_start", "evaluation_complete")
+- `log_line` - Stdout/stderr log line
+- `progress` - Progress update (e.g., epoch 5/10)
+- `metric_update` - Metric value emitted
+- `sample_pred` - Sample prediction (for debugging)
+- `error` - Error occurred
+
+### `assets.kind`
+- `pdf` - Original paper PDF
+- `notebook` - Generated Jupyter notebook (.ipynb)
+- `requirements` - Requirements.txt for plan
+- `metrics` - Metrics JSON from run
+- `logs` - Execution logs from run
+- `events` - SSE events JSONL from run
+- `storyboard` - Kid-Mode storyboard JSON
+
+### `evals.direction`
+- `maximize` - Higher is better (e.g., accuracy, F1)
+- `minimize` - Lower is better (e.g., loss, error rate)
+
+---
+
+**Last Updated:** 2025-10-06
+**Schema Deployed:** 2025-10-04
+**Version:** 1.0 (Production)
+
+For questions or schema change requests, consult the team or open a GitHub issue.
