@@ -80,6 +80,127 @@ class PlanAssetsResponse(BaseModel):
     expires_at: datetime
 
 
+async def _fix_plan_schema(
+    raw_plan: dict,
+    budget_minutes: int,
+    paper_title: str,
+    span: Any = None,
+) -> dict:
+    """
+    Stage 2 of two-stage planner: Use GPT-4o to convert raw plan to Plan v1.1 schema.
+
+    Takes potentially malformed plan JSON from o3-mini (Stage 1) and restructures it
+    to match PlanDocumentV11 schema exactly, preserving all reasoning and justifications.
+
+    Args:
+        raw_plan: Raw plan dict from Stage 1 (may have schema issues)
+        budget_minutes: Policy budget to inject if missing
+        paper_title: Paper title for context
+        span: Optional tracing span
+
+    Returns:
+        Fixed plan dict that validates against PlanDocumentV11
+
+    Raises:
+        HTTPException: If schema fixing fails
+    """
+    from ..config.llm import get_client
+
+    settings = get_settings()
+    client = get_client()
+
+    # Get target schema
+    target_schema = PlanDocumentV11.model_json_schema()
+
+    # Build prompt for schema fixer
+    system_prompt = """You are a JSON schema expert. Your task is to restructure a plan JSON to match the exact Plan v1.1 schema.
+
+CRITICAL RULES:
+1. Preserve ALL reasoning, justifications, and verbatim quotes from the input
+2. Move fields to correct locations (e.g., budget_minutes → policy.budget_minutes)
+3. Add missing required fields with sensible defaults
+4. Return ONLY valid JSON that matches the target schema exactly
+5. Do not modify the content of justifications or technical details"""
+
+    # Handle both raw text and JSON input from Stage 1
+    if isinstance(raw_plan, dict) and "raw_text" in raw_plan:
+        raw_content = f"""Raw Text Output (from Stage 1 - NOT JSON):
+{raw_plan['raw_text']}
+
+You must convert this natural language description into valid JSON matching the schema."""
+    else:
+        raw_content = f"""Raw Plan (from Stage 1 - May have schema issues):
+{json.dumps(raw_plan, indent=2)}
+
+Restructure this to match the target schema exactly."""
+
+    user_prompt = f"""Convert this reproduction plan to match Plan v1.1 schema exactly.
+
+{raw_content}
+
+Target Schema:
+{json.dumps(target_schema, indent=2)}
+
+Paper Title: {paper_title}
+Policy Budget: {budget_minutes} minutes
+
+CRITICAL REQUIREMENTS:
+1. Output ONLY valid JSON matching the target schema
+2. Must include "justifications" object with THREE required keys: "dataset", "model", "config"
+3. Each justification value must be an object with:
+   - "quote": string with a verbatim quote from the paper
+   - "citation": string with source (e.g., "Section 3.2", "Table 1")
+4. Must include "estimated_runtime_minutes" (integer, estimate based on plan, max 20)
+5. Must include "license_compliant": boolean (true/false)
+6. Must include "metrics" array with at least one metric string
+7. Must include "visualizations" array with at least one visualization string
+8. Extract all technical details from the input and structure them properly"""
+
+    try:
+        with traced_subspan(span, "p2n.planner.stage2.schema_fix"):
+            # Use Chat Completions API for schema fixing (simpler, faster, cheaper)
+            response = client.chat.completions.create(
+                model=settings.openai_schema_fixer_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,  # Deterministic
+                response_format={"type": "json_object"}  # Ensure JSON output
+            )
+
+            fixed_text = response.choices[0].message.content
+            if not fixed_text:
+                raise ValueError("Schema fixer returned empty content")
+
+            fixed_plan = json.loads(fixed_text)
+
+            logger.info(
+                "planner.stage2.complete model=%s raw_fields=%s fixed_fields=%s",
+                settings.openai_schema_fixer_model,
+                list(raw_plan.keys()),
+                list(fixed_plan.keys())
+            )
+
+            return fixed_plan
+
+    except Exception as exc:
+        logger.error(
+            "planner.stage2.failed paper=%s error=%s",
+            paper_title,
+            str(exc)
+        )
+        # Re-raise as HTTPException for consistent error handling
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "E_SCHEMA_FIX_FAILED",
+                "message": f"Failed to fix plan schema: {str(exc)}",
+                "remediation": "Disable two-stage planner or retry with different model"
+            }
+        ) from exc
+
+
 @router.post("/{paper_id}/plan", response_model=PlannerResponse)
 async def create_plan(
     paper_id: str,
@@ -106,7 +227,7 @@ async def create_plan(
     # Filter out web_search for o3-mini (not supported)
     settings = get_settings()
     if "o3-mini" in settings.openai_planner_model:
-        tools = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "web_search_preview")]
+        tools = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "web_search")]
 
     # Ensure file_search tool exists with max_num_results and vector_store_ids
     # Only add vector_store_ids if we have a valid one (don't pass empty arrays)
@@ -186,13 +307,20 @@ async def create_plan(
             span = traced_span
             planner_settings = get_settings()
             planner_model = planner_settings.openai_planner_model
-            stream_manager = client.responses.stream(
-                model=planner_model,
-                input=input_blocks,
-                tools=tools,
-                temperature=agent_defaults.temperature,
-                max_output_tokens=agent_defaults.max_output_tokens,
-            )
+
+            # Build stream parameters - o3-mini doesn't support temperature/top_p
+            stream_params = {
+                "model": planner_model,
+                "input": input_blocks,
+                "tools": tools,
+                "max_output_tokens": agent_defaults.max_output_tokens,
+            }
+
+            # Only add temperature for models that support it (not o3-mini)
+            if "o3-mini" not in planner_model:
+                stream_params["temperature"] = agent_defaults.temperature
+
+            stream_manager = client.responses.stream(**stream_params)
             with stream_manager as stream:
                 for event in stream:
                     event_type = getattr(event, "type", "")
@@ -257,25 +385,67 @@ async def create_plan(
                 },
             )
 
-        # Parse JSON
-        try:
-            plan_raw = json.loads(output_text.strip())
-        except json.JSONDecodeError as exc:
-            logger.error(
-                "planner.run.invalid_json paper_id=%s vector_store_id=%s output=%s",
-                paper.id,
-                redact_vector_store_id(paper.vector_store_id),
-                output_text[:200],
+        # TWO-STAGE PLANNER: Check if we should use Stage 2 for o3-mini
+        settings_for_stage2 = get_settings()
+        use_two_stage = settings_for_stage2.planner_two_stage_enabled and "o3-mini" in planner_model
+
+        if use_two_stage:
+            # o3-mini with two-stage: Skip JSON parsing, send raw output to Stage 2
+            logger.info(
+                "planner.stage1.complete model=%s output_length=%d two_stage=true",
+                planner_model,
+                len(output_text)
             )
-            record_trace("failed", ERROR_PLAN_SCHEMA_INVALID)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "code": ERROR_PLAN_SCHEMA_INVALID,
-                    "message": f"Planner returned invalid JSON: {exc}",
-                    "remediation": "Retry planning or adjust system prompt",
-                },
-            ) from exc
+            logger.info("planner.stage2.start paper_id=%s raw_output_preview=%s",
+                       paper.id, output_text[:200])
+
+            # Stage 2: GPT-4o converts ANY output to valid JSON
+            # This handles: natural language, malformed JSON, schema-wrong JSON, etc.
+            try:
+                plan_raw = await _fix_plan_schema(
+                    raw_plan={"raw_text": output_text} if not output_text.strip().startswith('{') else json.loads(output_text),
+                    budget_minutes=policy_budget,
+                    paper_title=paper.title,
+                    span=span
+                )
+                logger.info("planner.stage2.applied paper_id=%s", paper.id)
+            except Exception as stage2_exc:
+                logger.error("planner.stage2.failed paper_id=%s error=%s", paper.id, str(stage2_exc))
+                # If Stage 2 fails, raise original error
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={
+                        "code": "E_TWO_STAGE_FAILED",
+                        "message": f"Both Stage 1 and Stage 2 failed: {str(stage2_exc)}",
+                        "remediation": "Disable two-stage planner or check logs"
+                    }
+                ) from stage2_exc
+        else:
+            # Single-stage (gpt-4o or two-stage disabled): Parse JSON directly
+            try:
+                plan_raw = json.loads(output_text.strip())
+            except json.JSONDecodeError as exc:
+                logger.error(
+                    "planner.run.invalid_json paper_id=%s vector_store_id=%s output=%s",
+                    paper.id,
+                    redact_vector_store_id(paper.vector_store_id),
+                    output_text[:200],
+                )
+                record_trace("failed", ERROR_PLAN_SCHEMA_INVALID)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": ERROR_PLAN_SCHEMA_INVALID,
+                        "message": f"Planner returned invalid JSON: {exc}",
+                        "remediation": "Retry planning or adjust system prompt",
+                    },
+                ) from exc
+
+            logger.info(
+                "planner.stage1.complete model=%s fields=%s two_stage=false",
+                planner_model,
+                list(plan_raw.keys())
+            )
 
         # Convert to dataclass for guardrail check
         from ..agents.types import PlannerOutput

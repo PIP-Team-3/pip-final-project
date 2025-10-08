@@ -677,9 +677,22 @@ async def run_extractor(
                 for claim in parsed_output.claims
             ]
 
-        # Save claims to database
+        # Save claims to database (replace policy: delete old claims first)
         try:
             from ..data.models import ClaimCreate
+
+            yield _sse_event("stage_update", {"stage": "persist_start", "count": len(parsed_output.claims)})
+
+            # Delete existing claims for this paper (replace policy)
+            deleted_count = db.delete_claims_by_paper(paper.id)
+            if deleted_count > 0:
+                logger.info(
+                    "extractor.claims.deleted paper_id=%s count=%d",
+                    paper.id,
+                    deleted_count,
+                )
+
+            # Insert new claims
             claim_records = [
                 ClaimCreate(
                     paper_id=paper.id,
@@ -691,7 +704,7 @@ async def run_extractor(
                     method_snippet=claim.method_snippet,
                     source_citation=claim.citation.source_citation,
                     confidence=claim.citation.confidence,
-                    created_by=None,  # TODO: get from context when auth is implemented
+                    created_by=None,  # TODO: get from context when auth is implemented,
                     created_at=datetime.now(timezone.utc),
                 )
                 for claim in parsed_output.claims
@@ -702,6 +715,8 @@ async def run_extractor(
                 paper.id,
                 len(inserted_claims),
             )
+
+            yield _sse_event("stage_update", {"stage": "persist_done", "count": len(inserted_claims)})
         except Exception as exc:
             logger.exception(
                 "extractor.claims.save_failed paper_id=%s error=%s",

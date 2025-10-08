@@ -189,6 +189,28 @@ class SupabaseDatabase:
         data = getattr(response, "data", None) or []
         return [ClaimRecord.model_validate(r) for r in data]
 
+    def delete_claims_by_paper(self, paper_id: str) -> int:
+        """
+        Delete all claims for a given paper.
+
+        This is used during extraction to implement a "replace" policy:
+        each extraction run replaces all previous claims for that paper.
+
+        Args:
+            paper_id: UUID of the paper
+
+        Returns:
+            Number of claims deleted
+        """
+        response = (
+            self._client.table("claims")
+            .delete()
+            .eq("paper_id", paper_id)
+            .execute()
+        )
+        data = getattr(response, "data", None) or []
+        return len(data)
+
     # ------------------------------------------------------------------
     # Plans
     # ------------------------------------------------------------------

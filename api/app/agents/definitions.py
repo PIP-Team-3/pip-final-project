@@ -118,9 +118,15 @@ def _build_planner() -> AgentDefinition:
         role=AgentRole.PLANNER,
         summary="Drafts a CPU-only reproduction plan that preserves metric intent.",
         system_prompt=(
-            "Produce a deterministic Plan JSON v1.1 under 20 CPU minutes. "
-            "Include dataset, model, config, metrics, visualizations, explain steps, and a justifications map"
-            " with verbatim paper quotes."
+            "You are an ML reproduction expert. Analyze the paper and create a detailed reproduction plan.\n\n"
+            "FOCUS ON REASONING (not exact schema format):\n"
+            "1. Dataset choice: Assess availability, licensing, size constraints\n"
+            "2. Model architecture: Match paper's approach or adapt for CPU execution under 20 minutes\n"
+            "3. Training configuration: Select epochs, batch size, optimizer, learning rate\n"
+            "4. Metrics: Identify metrics from the paper to reproduce\n"
+            "5. Justifications: Include verbatim quotes from the paper explaining your choices\n\n"
+            "Include dataset, model, config, metrics, visualizations, explain steps, and justifications with paper quotes.\n"
+            "Aim for correctness and strong reasoning - schema formatting will be handled separately."
         ),
         output_type=PlannerOutput,
         input_guardrail=Guardrail(
