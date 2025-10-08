@@ -103,6 +103,11 @@ async def create_plan(
     tool_payloads = build_tool_payloads(agent)
     tools = list(tool_payloads)
 
+    # Filter out web_search for o3-mini (not supported)
+    settings = get_settings()
+    if "o3-mini" in settings.openai_planner_model:
+        tools = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "web_search_preview")]
+
     # Ensure file_search tool exists with max_num_results and vector_store_ids
     # Only add vector_store_ids if we have a valid one (don't pass empty arrays)
     has_file_search = False

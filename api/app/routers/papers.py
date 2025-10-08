@@ -677,6 +677,40 @@ async def run_extractor(
                 for claim in parsed_output.claims
             ]
 
+        # Save claims to database
+        try:
+            from ..data.models import ClaimCreate
+            claim_records = [
+                ClaimCreate(
+                    paper_id=paper.id,
+                    dataset_name=claim.dataset_name,
+                    split=claim.split,
+                    metric_name=claim.metric_name,
+                    metric_value=claim.metric_value,
+                    units=claim.units,
+                    method_snippet=claim.method_snippet,
+                    source_citation=claim.citation.source_citation,
+                    confidence=claim.citation.confidence,
+                    created_by=None,  # TODO: get from context when auth is implemented
+                    created_at=datetime.now(timezone.utc),
+                )
+                for claim in parsed_output.claims
+            ]
+            inserted_claims = db.insert_claims(claim_records)
+            logger.info(
+                "extractor.claims.saved paper_id=%s count=%d",
+                paper.id,
+                len(inserted_claims),
+            )
+        except Exception as exc:
+            logger.exception(
+                "extractor.claims.save_failed paper_id=%s error=%s",
+                paper.id,
+                str(exc),
+            )
+            # Continue - claims were extracted successfully even if save failed
+            yield _sse_event("log_line", {"message": f"Warning: Claims extracted but failed to save to database: {str(exc)}"})
+
         logger.info(
             "extractor.run.complete paper_id=%s vector_store_id=%s claims=%s",
             paper.id,
@@ -690,6 +724,35 @@ async def run_extractor(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.get("/{paper_id}/claims")
+async def get_paper_claims(
+    paper_id: str,
+    db=Depends(get_supabase_db),
+):
+    """
+    Get all claims for a paper.
+
+    Returns the claims that were extracted and saved to the database.
+    """
+    claims = db.get_claims_by_paper(paper_id)
+    return {
+        "paper_id": paper_id,
+        "claims_count": len(claims),
+        "claims": [
+            {
+                "id": claim.id,
+                "dataset_name": claim.dataset_name,
+                "split": claim.split,
+                "metric_name": claim.metric_name,
+                "metric_value": claim.metric_value,
+                "units": claim.units,
+                "source_citation": claim.source_citation,
+                "confidence": claim.confidence,
+                "created_at": claim.created_at.isoformat() if claim.created_at else None,
+            }
+            for claim in claims
+        ],
+    }
 
 
 

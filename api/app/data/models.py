@@ -31,6 +31,34 @@ class PaperRecord(PaperCreate):
     }
 
 
+class ClaimCreate(BaseModel):
+    """Model for creating a claim record in the database."""
+    paper_id: str
+    dataset_name: Optional[str] = None
+    split: Optional[str] = None
+    metric_name: str
+    metric_value: float
+    units: Optional[str] = None
+    method_snippet: Optional[str] = None
+    source_citation: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    created_by: Optional[str] = None
+    created_at: datetime
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+
+class ClaimRecord(ClaimCreate):
+    """Model for a claim record from the database (includes id)."""
+    id: str
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+
 class StorageArtifact(BaseModel):
     bucket: str
     path: str

@@ -16,6 +16,8 @@ except Exception:  # pragma: no cover
         )
 
 from .models import (
+    ClaimCreate,
+    ClaimRecord,
     PaperCreate,
     PaperRecord,
     PlanCreate,
@@ -135,6 +137,57 @@ class SupabaseDatabase:
         if not data:
             raise RuntimeError("Unable to update paper vector store metadata")
         return PaperRecord.model_validate(data)
+
+    # ------------------------------------------------------------------
+    # Claims
+    # ------------------------------------------------------------------
+    def insert_claims(self, claims: list[ClaimCreate]) -> list[ClaimRecord]:
+        """
+        Bulk insert claims for a paper.
+
+        Args:
+            claims: List of ClaimCreate objects to insert
+
+        Returns:
+            List of ClaimRecord objects with generated IDs
+        """
+        if not claims:
+            return []
+
+        # Convert to dicts, filtering out invalid created_by values
+        data_list = []
+        for claim in claims:
+            data = claim.model_dump(mode="json", exclude_none=False)
+            created_by = data.get("created_by")
+            if not is_valid_uuid(created_by):
+                data.pop("created_by", None)
+            data_list.append(data)
+
+        response = self._client.table("claims").insert(data_list).execute()
+        result = getattr(response, "data", None) or []
+        if not result:
+            raise RuntimeError("Failed to insert claims")
+        return [ClaimRecord.model_validate(r) for r in result]
+
+    def get_claims_by_paper(self, paper_id: str) -> list[ClaimRecord]:
+        """
+        Fetch all claims for a given paper.
+
+        Args:
+            paper_id: UUID of the paper
+
+        Returns:
+            List of ClaimRecord objects
+        """
+        response = (
+            self._client.table("claims")
+            .select("*")
+            .eq("paper_id", paper_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        data = getattr(response, "data", None) or []
+        return [ClaimRecord.model_validate(r) for r in data]
 
     # ------------------------------------------------------------------
     # Plans
