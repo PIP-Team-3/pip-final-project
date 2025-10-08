@@ -309,16 +309,22 @@ async def create_plan(
             planner_model = planner_settings.openai_planner_model
 
             # Build stream parameters - o3-mini doesn't support temperature/top_p
+            # o3-mini produces detailed reasoning, so increase token limit
+            max_tokens = 8192 if "o3-mini" in planner_model else agent_defaults.max_output_tokens
+
             stream_params = {
                 "model": planner_model,
                 "input": input_blocks,
                 "tools": tools,
-                "max_output_tokens": agent_defaults.max_output_tokens,
+                "max_output_tokens": max_tokens,
             }
 
             # Only add temperature for models that support it (not o3-mini)
             if "o3-mini" not in planner_model:
                 stream_params["temperature"] = agent_defaults.temperature
+
+            # Collect output text from stream events (more reliable than final_response for o3-mini)
+            output_text_parts = []
 
             stream_manager = client.responses.stream(**stream_params)
             with stream_manager as stream:
@@ -354,20 +360,46 @@ async def create_plan(
                     if event_type == COMPLETED_EVENT_TYPE:
                         final_response = getattr(event, "response", None)
 
+                    # Collect output text from content delta events
+                    if event_type == "response.output_text.delta":
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            output_text_parts.append(delta)
+
+                # Try to get final response, but don't fail if stream didn't complete properly
                 if final_response is None:
-                    final_response = stream.get_final_response()
+                    try:
+                        final_response = stream.get_final_response()
+                    except RuntimeError as e:
+                        # o3-mini sometimes doesn't send completion event - use collected text instead
+                        logger.warning(
+                            "planner.stream.no_completion_event paper_id=%s collected_text_length=%d",
+                            paper.id,
+                            sum(len(p) for p in output_text_parts)
+                        )
 
         # Parse output text from response
-        output_text = getattr(final_response, "output_text", None)
-        if not output_text:
-            # Fallback: assemble from output array
-            parts = []
-            for item in getattr(final_response, "output", []) or []:
-                for block in getattr(item, "content", []) or []:
-                    text = getattr(block, "text", None)
-                    if text:
-                        parts.append(text)
-            output_text = "\n".join(parts) if parts else ""
+        output_text = None
+        if final_response:
+            output_text = getattr(final_response, "output_text", None)
+            if not output_text:
+                # Fallback: assemble from output array
+                parts = []
+                for item in getattr(final_response, "output", []) or []:
+                    for block in getattr(item, "content", []) or []:
+                        text = getattr(block, "text", None)
+                        if text:
+                            parts.append(text)
+                output_text = "\n".join(parts) if parts else ""
+
+        # If still no output, use collected text from stream deltas
+        if not output_text and output_text_parts:
+            output_text = "".join(output_text_parts)
+            logger.info(
+                "planner.using_collected_text paper_id=%s length=%d",
+                paper.id,
+                len(output_text)
+            )
 
         if not output_text or not output_text.strip():
             logger.warning(
