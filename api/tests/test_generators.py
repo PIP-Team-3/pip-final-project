@@ -293,24 +293,46 @@ def test_sklearn_logistic_generator_requirements():
 
 
 # ============================================================================
-# GeneratorFactory Tests (Phase 1)
+# GeneratorFactory Tests (Phase 2)
 # ============================================================================
 
 
-def test_factory_always_returns_synthetic_dataset_phase1():
-    """Phase 1: Factory always returns SyntheticDatasetGenerator."""
-    plan_mnist = _create_test_plan(dataset_name="MNIST")
-    plan_sst2 = _create_test_plan(dataset_name="SST-2")
-    plan_cifar = _create_test_plan(dataset_name="CIFAR-10")
+def test_factory_smart_dataset_selection_phase2():
+    """Phase 2: Factory performs smart dataset selection based on registry."""
+    from app.materialize.generators import (
+        HuggingFaceDatasetGenerator,
+        SklearnDatasetGenerator,
+        TorchvisionDatasetGenerator,
+    )
+
+    # Test registry matches (normalized names)
+    plan_mnist = _create_test_plan(dataset_name="mnist")
+    plan_sst2 = _create_test_plan(dataset_name="sst2")
+    plan_digits = _create_test_plan(dataset_name="digits")
 
     gen_mnist = GeneratorFactory.get_dataset_generator(plan_mnist)
     gen_sst2 = GeneratorFactory.get_dataset_generator(plan_sst2)
-    gen_cifar = GeneratorFactory.get_dataset_generator(plan_cifar)
+    gen_digits = GeneratorFactory.get_dataset_generator(plan_digits)
 
-    # Phase 1: Always synthetic (no behavior change)
-    assert isinstance(gen_mnist, SyntheticDatasetGenerator)
-    assert isinstance(gen_sst2, SyntheticDatasetGenerator)
-    assert isinstance(gen_cifar, SyntheticDatasetGenerator)
+    # Phase 2: Smart selection based on registry
+    assert isinstance(gen_mnist, TorchvisionDatasetGenerator)
+    assert isinstance(gen_sst2, HuggingFaceDatasetGenerator)
+    assert isinstance(gen_digits, SklearnDatasetGenerator)
+
+    # Test unknown dataset → synthetic fallback
+    plan_unknown = _create_test_plan(dataset_name="unknown_dataset_xyz")
+    gen_unknown = GeneratorFactory.get_dataset_generator(plan_unknown)
+    assert isinstance(gen_unknown, SyntheticDatasetGenerator)
+
+    # Test alias matching (SST-2 with hyphen should match sst2)
+    plan_sst2_alias = _create_test_plan(dataset_name="SST-2")
+    gen_sst2_alias = GeneratorFactory.get_dataset_generator(plan_sst2_alias)
+    assert isinstance(gen_sst2_alias, HuggingFaceDatasetGenerator)
+
+    # Test case-insensitive matching
+    plan_mnist_upper = _create_test_plan(dataset_name="MNIST")
+    gen_mnist_upper = GeneratorFactory.get_dataset_generator(plan_mnist_upper)
+    assert isinstance(gen_mnist_upper, TorchvisionDatasetGenerator)
 
 
 def test_factory_always_returns_logistic_model_phase1():

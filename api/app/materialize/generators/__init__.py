@@ -12,13 +12,31 @@ Phase 2+: Add smart dataset/model selection based on plan
 """
 
 from .base import CodeGenerator
-from .dataset import SyntheticDatasetGenerator
+from .dataset import (
+    HuggingFaceDatasetGenerator,
+    SklearnDatasetGenerator,
+    SyntheticDatasetGenerator,
+    TorchvisionDatasetGenerator,
+)
+from .dataset_registry import (
+    DatasetMetadata,
+    DatasetSource,
+    lookup_dataset,
+    normalize_dataset_name,
+)
 from .factory import GeneratorFactory
 from .model import SklearnLogisticGenerator
 
 __all__ = [
     "CodeGenerator",
+    "DatasetMetadata",
+    "DatasetSource",
     "GeneratorFactory",
+    "HuggingFaceDatasetGenerator",
+    "SklearnDatasetGenerator",
     "SyntheticDatasetGenerator",
+    "TorchvisionDatasetGenerator",
     "SklearnLogisticGenerator",
+    "lookup_dataset",
+    "normalize_dataset_name",
 ]

@@ -4,16 +4,27 @@ Factory for selecting appropriate code generators based on plan.
 Phase 1: Always returns SyntheticDatasetGenerator and SklearnLogisticGenerator
          (no behavior change from current notebook.py)
 
-Phase 2+: Smart selection based on plan.dataset.name and plan.model.name
-          with fallback chains for graceful degradation
+Phase 2: Smart dataset selection based on registry lookup with fallback
+Phase 3: Smart model selection (coming soon)
+Phase 4: Docker-ready features (coming soon)
 """
 
 from __future__ import annotations
 
+import logging
+
 from .base import CodeGenerator
-from .dataset import SyntheticDatasetGenerator
+from .dataset import (
+    HuggingFaceDatasetGenerator,
+    SklearnDatasetGenerator,
+    SyntheticDatasetGenerator,
+    TorchvisionDatasetGenerator,
+)
+from .dataset_registry import DatasetSource, lookup_dataset
 from .model import SklearnLogisticGenerator
 from ...schemas.plan_v1_1 import PlanDocumentV11
+
+logger = logging.getLogger(__name__)
 
 
 class GeneratorFactory:
@@ -37,21 +48,83 @@ class GeneratorFactory:
         """
         Select appropriate dataset generator based on plan.
 
-        Phase 1: Always returns SyntheticDatasetGenerator (no behavior change).
+        Phase 2: Smart selection via registry lookup with graceful fallback.
+
+        Selection strategy:
+        1. Lookup plan.dataset.name in registry (handles aliases)
+        2. If found: Return appropriate generator based on source
+        3. If not found: Return SyntheticDatasetGenerator (graceful fallback)
 
         Args:
             plan: The plan document containing dataset info
 
         Returns:
             CodeGenerator instance for dataset loading
+
+        Examples:
+            >>> plan.dataset.name = "SST-2"  # Planner output
+            >>> gen = GeneratorFactory.get_dataset_generator(plan)
+            >>> isinstance(gen, HuggingFaceDatasetGenerator)
+            True
+            >>> plan.dataset.name = "unknown_dataset"
+            >>> gen = GeneratorFactory.get_dataset_generator(plan)
+            >>> isinstance(gen, SyntheticDatasetGenerator)
+            True
         """
-        # Phase 1: Always synthetic (exact current behavior)
-        # Future: Check plan.dataset.name and select:
-        #   - SklearnDatasetGenerator for digits/iris/wine
-        #   - TorchvisionDatasetGenerator for mnist/cifar10
-        #   - HuggingFaceDatasetGenerator for sst2/imdb
-        #   - SyntheticDatasetGenerator as fallback
-        return SyntheticDatasetGenerator()
+        dataset_name = plan.dataset.name
+
+        # Lookup in registry (handles normalization + aliases)
+        metadata = lookup_dataset(dataset_name)
+
+        if metadata is None:
+            # Not in registry → fallback to synthetic
+            logger.info(
+                "Dataset '%s' not in registry, using synthetic fallback",
+                dataset_name,
+            )
+            return SyntheticDatasetGenerator()
+
+        # Log size warning for large datasets
+        if metadata.typical_size_mb > 200:
+            logger.warning(
+                "Dataset '%s' will download ~%dMB on first run. "
+                "Consider setting MAX_TRAIN_SAMPLES to reduce size.",
+                dataset_name,
+                metadata.typical_size_mb,
+            )
+
+        # Select generator based on source
+        if metadata.source == DatasetSource.SKLEARN:
+            logger.info(
+                "Dataset '%s' found in registry: sklearn (bundled, no download)",
+                dataset_name,
+            )
+            return SklearnDatasetGenerator(metadata)
+
+        elif metadata.source == DatasetSource.TORCHVISION:
+            logger.info(
+                "Dataset '%s' found in registry: torchvision (~%dMB download on first use)",
+                dataset_name,
+                metadata.typical_size_mb,
+            )
+            return TorchvisionDatasetGenerator(metadata)
+
+        elif metadata.source == DatasetSource.HUGGINGFACE:
+            logger.info(
+                "Dataset '%s' found in registry: HuggingFace (~%dMB download on first use)",
+                dataset_name,
+                metadata.typical_size_mb,
+            )
+            return HuggingFaceDatasetGenerator(metadata)
+
+        else:
+            # Unknown source → fallback to synthetic
+            logger.warning(
+                "Dataset '%s' has unknown source '%s', using synthetic fallback",
+                dataset_name,
+                metadata.source,
+            )
+            return SyntheticDatasetGenerator()
 
     @staticmethod
     def get_model_generator(plan: PlanDocumentV11) -> CodeGenerator:
