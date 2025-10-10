@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: Optional[str] = None
     supabase_anon_key: Optional[str] = None
     supabase_bucket_papers: str = "papers"
+    supabase_bucket_plans: str = "plans"  # For generated artifacts (notebooks, requirements)
 
     allow_missing_supabase: bool = False
 

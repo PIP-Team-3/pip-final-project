@@ -19,7 +19,7 @@ from ..config.settings import get_settings
 from ..data.models import PlanCreate, StorageArtifact
 from ..materialize.notebook import build_notebook_bytes, build_requirements
 from ..data.supabase import is_valid_uuid
-from ..dependencies import get_supabase_db, get_supabase_storage, get_tool_tracker
+from ..dependencies import get_supabase_db, get_supabase_storage, get_supabase_plans_storage, get_tool_tracker
 from ..schemas.plan_v1_1 import PlanDocumentV11
 from ..tools.errors import ToolUsagePolicyError
 from ..utils.redaction import redact_vector_store_id
@@ -651,7 +651,7 @@ async def create_plan(
 async def materialize_plan_assets(
     plan_id: str,
     db=Depends(get_supabase_db),
-    storage=Depends(get_supabase_storage),
+    plans_storage=Depends(get_supabase_plans_storage),  # Use plans bucket for artifacts
 ):
     plan_record = db.get_plan(plan_id)
     if not plan_record:
@@ -675,16 +675,17 @@ async def materialize_plan_assets(
             },
         ) from exc
 
-    notebook_key = f"plans/{plan_id}/notebook.ipynb"
-    env_key = f"plans/{plan_id}/requirements.txt"
+    notebook_key = f"{plan_id}/notebook.ipynb"
+    env_key = f"{plan_id}/requirements.txt"
 
     with traced_run("p2n.materialize") as span:
         with traced_subspan(span, "p2n.materialize.codegen"):
             notebook_bytes = build_notebook_bytes(plan, plan_id)
             requirements_text, env_hash = build_requirements(plan)
         with traced_subspan(span, "p2n.materialize.persist"):
-            storage.store_asset(notebook_key, notebook_bytes, "application/x-ipynb+json")
-            storage.store_text(env_key, requirements_text, "text/plain")
+            # Store in plans bucket (separate from papers bucket)
+            plans_storage.store_text(notebook_key, notebook_bytes.decode("utf-8"), "text/plain")
+            plans_storage.store_text(env_key, requirements_text, "text/plain")
         db.set_plan_env_hash(plan_id, env_hash)
 
     logger.info(
@@ -706,7 +707,7 @@ async def materialize_plan_assets(
 async def get_plan_assets(
     plan_id: str,
     db=Depends(get_supabase_db),
-    storage=Depends(get_supabase_storage),
+    plans_storage=Depends(get_supabase_plans_storage),  # Use plans bucket for artifacts
 ):
     plan_record = db.get_plan(plan_id)
     if not plan_record:
@@ -719,9 +720,9 @@ async def get_plan_assets(
             },
         )
 
-    notebook_key = f"plans/{plan_id}/notebook.ipynb"
-    env_key = f"plans/{plan_id}/requirements.txt"
-    missing = [key for key in (notebook_key, env_key) if not storage.object_exists(key)]
+    notebook_key = f"{plan_id}/notebook.ipynb"
+    env_key = f"{plan_id}/requirements.txt"
+    missing = [key for key in (notebook_key, env_key) if not plans_storage.object_exists(key)]
     if missing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -733,8 +734,8 @@ async def get_plan_assets(
         )
 
     ttl = MATERIALIZE_SIGNED_URL_TTL
-    notebook_artifact = storage.create_signed_url(notebook_key, expires_in=ttl)
-    env_artifact = storage.create_signed_url(env_key, expires_in=ttl)
+    notebook_artifact = plans_storage.create_signed_url(notebook_key, expires_in=ttl)
+    env_artifact = plans_storage.create_signed_url(env_key, expires_in=ttl)
 
     def _safe_url(artifact: StorageArtifact) -> str:
         return artifact.signed_url or ""

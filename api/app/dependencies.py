@@ -50,12 +50,24 @@ def _supabase_storage() -> SupabaseStorage:
     return SupabaseStorage(_supabase_client(), settings.supabase_bucket_papers)
 
 
+@lru_cache
+def _supabase_plans_storage() -> SupabaseStorage:
+    """Storage instance for plan artifacts (notebooks, requirements, metrics)."""
+    settings = get_settings()
+    return SupabaseStorage(_supabase_client(), settings.supabase_bucket_plans)
+
+
 def get_supabase_db() -> SupabaseDatabase:
     return _supabase_database()
 
 
 def get_supabase_storage() -> SupabaseStorage:
     return _supabase_storage()
+
+
+def get_supabase_plans_storage() -> SupabaseStorage:
+    """Get storage instance for plan artifacts (notebooks, requirements)."""
+    return _supabase_plans_storage()
 
 
 def get_file_search_service() -> FileSearchService:

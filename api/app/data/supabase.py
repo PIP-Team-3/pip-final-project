@@ -249,14 +249,14 @@ class SupabaseDatabase:
             self._client.table("plans")
             .update(update_payload)
             .eq("id", plan_id)
-            .select("*")
-            .single()
             .execute()
         )
         data = getattr(response, "data", None)
         if not data:
             raise RuntimeError("Failed to update plan env hash")
-        return PlanRecord.model_validate(data)
+        # Return first record if data is a list, otherwise return as-is
+        record_data = data[0] if isinstance(data, list) and len(data) > 0 else data
+        return PlanRecord.model_validate(record_data)
 
     # ------------------------------------------------------------------
     # Runs
