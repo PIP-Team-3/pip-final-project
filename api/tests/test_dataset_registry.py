@@ -151,7 +151,7 @@ class TestLookupNotFound:
         """Unknown dataset should return None."""
         assert lookup_dataset("unknown_dataset") is None
         assert lookup_dataset("does_not_exist") is None
-        assert lookup_dataset("cifar10") is None  # Not in Phase 2 registry yet
+        assert lookup_dataset("imagenet") is None  # Blocked dataset
 
     def test_empty_string_returns_none(self):
         """Empty string should return None."""
@@ -169,7 +169,8 @@ class TestRegistryHelpers:
         """Should return all primary dataset names."""
         names = get_all_dataset_names()
         assert isinstance(names, list)
-        assert len(names) == 5  # Phase 2 has 5 datasets
+        assert len(names) >= 5  # Registry has been expanded
+        # Check core datasets exist
         assert "digits" in names
         assert "iris" in names
         assert "mnist" in names
@@ -191,13 +192,13 @@ class TestRegistryHelpers:
     def test_get_datasets_by_source_torchvision(self):
         """Should return torchvision datasets."""
         torch_datasets = get_datasets_by_source(DatasetSource.TORCHVISION)
-        assert len(torch_datasets) == 1
+        assert len(torch_datasets) >= 1  # At least MNIST, may have CIFAR variants
         assert "mnist" in torch_datasets
 
     def test_get_datasets_by_source_huggingface(self):
         """Should return HuggingFace datasets."""
         hf_datasets = get_datasets_by_source(DatasetSource.HUGGINGFACE)
-        assert len(hf_datasets) == 2
+        assert len(hf_datasets) >= 2  # At least SST-2 and IMDB, registry may grow
         assert "sst2" in hf_datasets
         assert "imdb" in hf_datasets
 

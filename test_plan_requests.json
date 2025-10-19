@@ -1,0 +1,26 @@
+{
+  "textcnn_sst2": {
+    "paper_id": "15017eb5-68ee-4dcb-b3b4-1c98479c3a93",
+    "claims": [{
+      "dataset": "SST-2",
+      "split": "test",
+      "metric": "Accuracy",
+      "value": 88.1,
+      "units": "%",
+      "citation": "Table 2",
+      "confidence": 0.9
+    }]
+  },
+  "fasttext_ag_news": {
+    "paper_id": "412e60b8-a0a0-4bfc-9f5f-b4f68cd0b338",
+    "claims": [{
+      "dataset": "AG",
+      "split": "test",
+      "metric": "Accuracy",
+      "value": 92.5,
+      "units": "%",
+      "citation": "Table 1",
+      "confidence": 0.95
+    }]
+  }
+}

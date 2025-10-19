@@ -11,34 +11,126 @@ from pydantic import BaseModel, Field, field_validator
 from .errors import ToolValidationError
 from .registry import FunctionToolSpec, function_tools
 
+# Synced with Phase 2 dataset_registry.py - 9 datasets total
 _DATASETS = {
-    "cifar-10": {
+    # SKLEARN (2)
+    "digits": {
+        "id": "digits",
+        "name": "Digits",
+        "source": "sklearn",
+        "license_id": "bsd-3-clause",
+        "size_mb": 1,
+    },
+    "iris": {
+        "id": "iris",
+        "name": "Iris",
+        "source": "sklearn",
+        "license_id": "bsd-3-clause",
+        "size_mb": 1,
+    },
+    # TORCHVISION (3)
+    "mnist": {
+        "id": "mnist",
+        "name": "MNIST",
+        "source": "torchvision",
+        "license_id": "cc-by-sa-3.0",
+        "size_mb": 15,
+    },
+    "cifar10": {
         "id": "cifar10",
         "name": "CIFAR-10",
         "source": "torchvision",
         "license_id": "mit",
+        "size_mb": 170,
     },
-    "sst-2": {
+    "cifar100": {
+        "id": "cifar100",
+        "name": "CIFAR-100",
+        "source": "torchvision",
+        "license_id": "mit",
+        "size_mb": 169,
+    },
+    # HUGGINGFACE (4)
+    "sst2": {
         "id": "sst2",
         "name": "SST-2",
-        "source": "glue",
+        "source": "huggingface",
+        "license_id": "other",
+        "size_mb": 67,
+    },
+    "imdb": {
+        "id": "imdb",
+        "name": "IMDB",
+        "source": "huggingface",
         "license_id": "apache-2.0",
+        "size_mb": 130,
     },
-    "uci-adult": {
-        "id": "uci-adult",
-        "name": "UCI Adult",
-        "source": "uci",
-        "license_id": "uci" ,
+    "agnews": {
+        "id": "agnews",
+        "name": "AG News",
+        "source": "huggingface",
+        "license_id": "apache-2.0",
+        "size_mb": 35,
+    },
+    "yahooanswerstopics": {
+        "id": "yahooanswerstopics",
+        "name": "Yahoo Answers Topics",
+        "source": "huggingface",
+        "license_id": "unknown",
+        "size_mb": 450,
+    },
+    "yelppolarity": {
+        "id": "yelppolarity",
+        "name": "Yelp Polarity",
+        "source": "huggingface",
+        "license_id": "unknown",
+        "size_mb": 200,
+    },
+    "trec": {
+        "id": "trec",
+        "name": "TREC",
+        "source": "huggingface",
+        "license_id": "unknown",
+        "size_mb": 1,
     },
 }
 
+# Aliases synced with Phase 2 registry
 _DATASET_ALIASES = {
-    "cifar10": "cifar-10",
-    "sst2": "sst-2",
-    "adult": "uci-adult",
+    # sklearn aliases
+    "sklearn_digits": "digits",
+    "digit": "digits",
+    "sklearn_iris": "iris",
+    # torchvision aliases
+    "mnist_vision": "mnist",
+    "torch_mnist": "mnist",
+    "cifar-10": "cifar10",
+    "cifar_10": "cifar10",
+    "cifar-100": "cifar100",
+    "cifar_100": "cifar100",
+    # huggingface aliases
+    "sst-2": "sst2",
+    "glue/sst2": "sst2",
+    "sst_2": "sst2",
+    "gluesst2": "sst2",
+    "stanford_sentiment": "sst2",
+    "imdb_reviews": "imdb",
+    "imdb_sentiment": "imdb",
+    "ag_news": "agnews",
+    "ag": "agnews",
+    "ag-news": "agnews",
+    "yahoo_answers_topics": "yahooanswerstopics",
+    "yahoo_answers": "yahooanswerstopics",
+    "yah_a": "yahooanswerstopics",
+    "yahoo-answers": "yahooanswerstopics",
+    "yelp_polarity": "yelppolarity",
+    "yelp_p": "yelppolarity",
+    "yelp-polarity": "yelppolarity",
+    "yelp": "yelppolarity",
+    "trec-6": "trec",
 }
 
-_ALLOWED_LICENSES = {"mit", "apache-2.0", "uci"}
+_ALLOWED_LICENSES = {"mit", "apache-2.0", "bsd-3-clause", "cc-by-sa-3.0", "other", "unknown"}
 _ALLOWED_PACKAGES = {
     "numpy",
     "pandas",

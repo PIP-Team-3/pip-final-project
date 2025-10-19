@@ -1,0 +1,127 @@
+[ingest] API: http://127.0.0.1:8000
+[ingest] Manifest: docs\Claudedocs\SeedSetup\manifests_seed_papers.csv
+[ingest] Output: ingest_results.json
+[ingest] ------------------------------------------------------------
+[ingest] Found 15 papers in manifest
+[ingest] 
+[1/15] kim_2014_textcnn
+[ingest]   Title: Convolutional Neural Networks for Sentence Classification...
+[ingest]   Domain: NLP
+[ingest]   Datasets: glue/sst2
+[ingest] ? Ingested successfully: 15017eb5-68ee-4dcb-b3b4-1c98479c3a93
+[ingest] 
+[2/15] joulin_2016_fasttext
+[ingest]   Title: Bag of Tricks for Efficient Text Classification...
+[ingest]   Domain: NLP
+[ingest]   Datasets: ag_news|yahoo_answers
+[ingest] ? Ingested successfully: 412e60b8-a0a0-4bfc-9f5f-b4f68cd0b338
+[ingest] 
+[3/15] zhang_2015_charcnn
+[ingest]   Title: Character-level Convolutional Networks for Text Classificati...
+[ingest]   Domain: NLP
+[ingest]   Datasets: ag_news|yelp_polarity
+[ingest] ? Ingested successfully: 8479e2f7-78fe-4098-b949-5899ce07f8c9
+[ingest] 
+[4/15] he_2015_resnet
+[ingest]   Title: Deep Residual Learning for Image Recognition...
+[ingest]   Domain: CV
+[ingest]   Datasets: cifar10|imagenet
+[ingest] ? Ingested successfully: f568a896-673c-452b-ba08-cc157cc8e648
+[ingest] 
+[5/15] sandler_2018_mobilenetv2
+[ingest]   Title: MobileNetV2: Inverted Residuals and Linear Bottlenecks...
+[ingest]   Domain: CV
+[ingest]   Datasets: cifar10|imagenet
+[ingest] ? Ingested successfully: a2f98794-2af9-43b0-b45e-a2b4fff0e4c1
+[ingest] 
+[6/15] huang_2017_densenet
+[ingest]   Title: Densely Connected Convolutional Networks...
+[ingest]   Domain: CV
+[ingest]   Datasets: cifar10|imagenet
+[ingest] ? Ingested successfully: 3e585dc9-5968-4458-b81f-d1146d2577e8
+[ingest] 
+[7/15] farber_2015_taxi_weather
+[ingest]   Title: Why You Can’t Find a Taxi in the Rain...
+[ingest]   Domain: Public-Interest
+[ingest]   Datasets: nyc_tlc+noaa
+[ingest] ? Ingested successfully: f99a15d2-d5c9-4eb0-b02c-cffb10fe8447
+[ingest] 
+[8/15] bechdel_538
+[ingest]   Title: Hollywood Has A Woman Problem (FiveThirtyEight)...
+[ingest]   Domain: Public-Interest
+[ingest]   Datasets: bechdel_api+tmdb
+[ingest]   ??  PDF not found: assets\papers\bechdel_538.pdf - skipping
+[ingest] 
+[9/15] eia930_temp_load
+[ingest]   Title: Electricity demand vs temperature (EIA-930 methodology)...
+[ingest]   Domain: Energy
+[ingest]   Datasets: eia930+noaa
+[ingest] ? Ingested successfully: b112dad4-326c-433c-af5e-a0020f478767
+[ingest] 
+[10/15] hardt_2016_equality_of_opportunity
+[ingest]   Title: Equality of Opportunity in Supervised Learning...
+[ingest]   Domain: Fairness
+[ingest]   Datasets: uci/adult
+[ingest] ? Ingested successfully: a865b40b-982c-4749-8b21-e02de388f6bf
+[ingest] 
+[11/15] reagan_2016_emotional_arcs
+[ingest]   Title: The emotional arcs of stories are dominated by six basic sha...
+[ingest]   Domain: NLP
+[ingest]   Datasets: gutenberg
+[ingest] ? Ingested successfully: 8bcbd3c7-e80b-4b2b-889a-4ff0cbc32249
+[ingest] 
+[12/15] miller_sanjurjo_2018_hot_hand
+[ingest]   Title: Surprised by the Gambler’s & Hot Hand Fallacies?...
+[ingest]   Domain: Behavioral
+[ingest]   Datasets: simulated_sequences
+[ingest] ? Ingested successfully: 36025869-6ee1-4240-af0d-ee1a2490b04c
+[ingest] 
+[13/15] apesteguia_2010_penalty_advantage
+[ingest]   Title: Psychological Pressure in Competitive Environments: Evidence...
+[ingest]   Domain: Sports
+[ingest]   Datasets: fifa_penalties
+[ingest]   ??  PDF not found: assets\papers\apesteguia_2010_penalty_advantage.pdf - skipping
+[ingest] 
+[14/15] romer_2006_4th_down
+[ingest]   Title: Do Firms Maximize? Evidence from Professional Football...
+[ingest]   Domain: Sports
+[ingest]   Datasets: nfl_pbp
+[ingest]   ??  PDF not found: assets\papers\romer_2006_4th_down.pdf - skipping
+[ingest] 
+[15/15] smith_2016_dst_crashes
+[ingest]   Title: Spring Forward at Your Own Risk: DST and Fatal Vehicle Crash...
+[ingest]   Domain: Public-Interest
+[ingest]   Datasets: fars+dst
+[ingest]   ??  PDF not found: assets\papers\smith_2016_dst_crashes.pdf - skipping
+[ingest] 
+============================================================
+[ingest] Ingestion Summary:
+[ingest]   ? Ingested: 11
+[ingest]   ??  Skipped: 4
+[ingest]   ? Failed: 0
+[ingest] 
+Results written to: ingest_results.json
+[ingest] 
+Ingested papers:
+[ingest]   kim_2014_textcnn ? 15017eb5-68ee-4dcb-b3b4-1c98479c3a93
+[ingest]   joulin_2016_fasttext ? 412e60b8-a0a0-4bfc-9f5f-b4f68cd0b338
+[ingest]   zhang_2015_charcnn ? 8479e2f7-78fe-4098-b949-5899ce07f8c9
+[ingest]   he_2015_resnet ? f568a896-673c-452b-ba08-cc157cc8e648
+[ingest]   sandler_2018_mobilenetv2 ? a2f98794-2af9-43b0-b45e-a2b4fff0e4c1
+[ingest]   huang_2017_densenet ? 3e585dc9-5968-4458-b81f-d1146d2577e8
+[ingest]   farber_2015_taxi_weather ? f99a15d2-d5c9-4eb0-b02c-cffb10fe8447
+[ingest]   eia930_temp_load ? b112dad4-326c-433c-af5e-a0020f478767
+[ingest]   hardt_2016_equality_of_opportunity ? a865b40b-982c-4749-8b21-e02de388f6bf
+[ingest]   reagan_2016_emotional_arcs ? 8bcbd3c7-e80b-4b2b-889a-4ff0cbc32249
+[ingest]   miller_sanjurjo_2018_hot_hand ? 36025869-6ee1-4240-af0d-ee1a2490b04c
+[ingest] 
+Skipped papers (PDF not found):
+[ingest]   bechdel_538
+[ingest]   apesteguia_2010_penalty_advantage
+[ingest]   romer_2006_4th_down
+[ingest]   smith_2016_dst_crashes
+[ingest] 
+Next steps:
+[ingest]   1. Extract claims: curl -N -X POST http://127.0.0.1:8000/api/v1/papers/{paper_id}/extract
+[ingest]   2. Generate plan: curl -X POST http://127.0.0.1:8000/api/v1/papers/{paper_id}/plan -d '{...}'
+[ingest]   3. Materialize: curl -X POST http://127.0.0.1:8000/api/v1/plans/{plan_id}/materialize

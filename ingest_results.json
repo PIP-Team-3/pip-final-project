@@ -1,0 +1,104 @@
+{
+  "ingested": {
+    "kim_2014_textcnn": {
+      "paper_id": "15017eb5-68ee-4dcb-b3b4-1c98479c3a93",
+      "title": "Convolutional Neural Networks for Sentence Classification",
+      "domain": "NLP",
+      "datasets": [
+        "glue/sst2"
+      ]
+    },
+    "joulin_2016_fasttext": {
+      "paper_id": "412e60b8-a0a0-4bfc-9f5f-b4f68cd0b338",
+      "title": "Bag of Tricks for Efficient Text Classification",
+      "domain": "NLP",
+      "datasets": [
+        "ag_news",
+        "yahoo_answers"
+      ]
+    },
+    "zhang_2015_charcnn": {
+      "paper_id": "8479e2f7-78fe-4098-b949-5899ce07f8c9",
+      "title": "Character-level Convolutional Networks for Text Classification",
+      "domain": "NLP",
+      "datasets": [
+        "ag_news",
+        "yelp_polarity"
+      ]
+    },
+    "he_2015_resnet": {
+      "paper_id": "f568a896-673c-452b-ba08-cc157cc8e648",
+      "title": "Deep Residual Learning for Image Recognition",
+      "domain": "CV",
+      "datasets": [
+        "cifar10",
+        "imagenet"
+      ]
+    },
+    "sandler_2018_mobilenetv2": {
+      "paper_id": "a2f98794-2af9-43b0-b45e-a2b4fff0e4c1",
+      "title": "MobileNetV2: Inverted Residuals and Linear Bottlenecks",
+      "domain": "CV",
+      "datasets": [
+        "cifar10",
+        "imagenet"
+      ]
+    },
+    "huang_2017_densenet": {
+      "paper_id": "3e585dc9-5968-4458-b81f-d1146d2577e8",
+      "title": "Densely Connected Convolutional Networks",
+      "domain": "CV",
+      "datasets": [
+        "cifar10",
+        "imagenet"
+      ]
+    },
+    "farber_2015_taxi_weather": {
+      "paper_id": "f99a15d2-d5c9-4eb0-b02c-cffb10fe8447",
+      "title": "Why You Can\u2019t Find a Taxi in the Rain",
+      "domain": "Public-Interest",
+      "datasets": [
+        "nyc_tlc+noaa"
+      ]
+    },
+    "eia930_temp_load": {
+      "paper_id": "b112dad4-326c-433c-af5e-a0020f478767",
+      "title": "Electricity demand vs temperature (EIA-930 methodology)",
+      "domain": "Energy",
+      "datasets": [
+        "eia930+noaa"
+      ]
+    },
+    "hardt_2016_equality_of_opportunity": {
+      "paper_id": "a865b40b-982c-4749-8b21-e02de388f6bf",
+      "title": "Equality of Opportunity in Supervised Learning",
+      "domain": "Fairness",
+      "datasets": [
+        "uci/adult"
+      ]
+    },
+    "reagan_2016_emotional_arcs": {
+      "paper_id": "8bcbd3c7-e80b-4b2b-889a-4ff0cbc32249",
+      "title": "The emotional arcs of stories are dominated by six basic shapes",
+      "domain": "NLP",
+      "datasets": [
+        "gutenberg"
+      ]
+    },
+    "miller_sanjurjo_2018_hot_hand": {
+      "paper_id": "36025869-6ee1-4240-af0d-ee1a2490b04c",
+      "title": "Surprised by the Gambler\u2019s & Hot Hand Fallacies?",
+      "domain": "Behavioral",
+      "datasets": [
+        "simulated_sequences"
+      ]
+    }
+  },
+  "skipped": [
+    "bechdel_538",
+    "apesteguia_2010_penalty_advantage",
+    "romer_2006_4th_down",
+    "smith_2016_dst_crashes"
+  ],
+  "failed": []
+}

@@ -141,6 +141,59 @@ DATASET_REGISTRY: Dict[str, DatasetMetadata] = {
         license="apache-2.0",
         aliases=("imdb_reviews", "imdb_sentiment"),
     ),
+    "agnews": DatasetMetadata(
+        source=DatasetSource.HUGGINGFACE,
+        load_function="load_dataset",
+        typical_size_mb=35,
+        supports_streaming=True,
+        hf_path=("ag_news",),
+        license="apache-2.0",
+        aliases=("ag_news", "ag", "ag-news"),
+    ),
+    "yahooanswerstopics": DatasetMetadata(
+        source=DatasetSource.HUGGINGFACE,
+        load_function="load_dataset",
+        typical_size_mb=450,
+        supports_streaming=True,
+        hf_path=("yahoo_answers_topics",),
+        license="unknown",
+        aliases=("yahoo_answers_topics", "yahoo_answers", "yah_a", "yahoo-answers"),
+    ),
+    "yelppolarity": DatasetMetadata(
+        source=DatasetSource.HUGGINGFACE,
+        load_function="load_dataset",
+        typical_size_mb=200,
+        supports_streaming=True,
+        hf_path=("yelp_polarity",),
+        license="unknown",
+        aliases=("yelp_polarity", "yelp_p", "yelp-polarity", "yelp"),
+    ),
+    "trec": DatasetMetadata(
+        source=DatasetSource.HUGGINGFACE,
+        load_function="load_dataset",
+        typical_size_mb=1,
+        supports_streaming=False,
+        hf_path=("trec",),
+        license="unknown",
+        aliases=("trec-6",),
+    ),
+    # ============================================================
+    # TORCHVISION DATASETS (Additional Vision Datasets)
+    # ============================================================
+    "cifar10": DatasetMetadata(
+        source=DatasetSource.TORCHVISION,
+        load_function="CIFAR10",
+        typical_size_mb=170,
+        license="MIT",
+        aliases=("cifar_10", "cifar-10"),
+    ),
+    "cifar100": DatasetMetadata(
+        source=DatasetSource.TORCHVISION,
+        load_function="CIFAR100",
+        typical_size_mb=169,
+        license="MIT",
+        aliases=("cifar_100", "cifar-100"),
+    ),
 }
 
 
@@ -212,3 +265,35 @@ def get_datasets_by_source(source: DatasetSource) -> list[str]:
     return sorted(
         name for name, meta in DATASET_REGISTRY.items() if meta.source == source
     )
+
+
+# Blocked datasets (large, restricted license, or otherwise problematic)
+# These will be omitted from plans with a warning instead of causing hard failures
+BLOCKED_DATASETS = {
+    "imagenet",
+    "imagenet1k",
+    "imagenet2012",
+    "imagenet21k",
+    "openimages",
+    "yfcc100m",
+}
+
+
+def is_dataset_blocked(name: str) -> bool:
+    """
+    Check if a dataset is blocked (large, restricted, etc.).
+
+    Args:
+        name: Dataset name to check
+
+    Returns:
+        True if dataset is in the blocked list
+
+    Examples:
+        >>> is_dataset_blocked("ImageNet")
+        True
+        >>> is_dataset_blocked("sst2")
+        False
+    """
+    normalized = normalize_dataset_name(name)
+    return normalized in BLOCKED_DATASETS

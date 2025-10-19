@@ -118,6 +118,7 @@ async def test_fix_plan_schema_with_malformed_input(
         with patch('api.app.routers.plans.get_settings') as mock_settings:
             with patch('api.app.routers.plans.traced_subspan', return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock())):
                 mock_settings.return_value.openai_schema_fixer_model = "gpt-4o"
+                mock_settings.return_value.planner_strict_schema = False  # Use non-strict mode
 
                 fixed_plan = await _fix_plan_schema(
                     raw_plan=malformed_plan_missing_policy,
@@ -158,6 +159,7 @@ async def test_fix_plan_schema_with_valid_input(
         with patch('api.app.routers.plans.get_settings') as mock_settings:
             with patch('api.app.routers.plans.traced_subspan', return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock())):
                 mock_settings.return_value.openai_schema_fixer_model = "gpt-4o"
+                mock_settings.return_value.planner_strict_schema = False  # Use non-strict mode
 
                 fixed_plan = await _fix_plan_schema(
                     raw_plan=valid_plan,
@@ -190,6 +192,7 @@ async def test_fix_plan_schema_preserves_justifications(
         with patch('api.app.routers.plans.get_settings') as mock_settings:
             with patch('api.app.routers.plans.traced_subspan', return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock())):
                 mock_settings.return_value.openai_schema_fixer_model = "gpt-4o"
+                mock_settings.return_value.planner_strict_schema = False  # Use non-strict mode
 
                 fixed_plan = await _fix_plan_schema(
                     raw_plan=malformed_plan_missing_policy,
@@ -218,7 +221,48 @@ def test_two_stage_planner_settings():
     # Verify new settings exist
     assert hasattr(settings, 'openai_schema_fixer_model')
     assert hasattr(settings, 'planner_two_stage_enabled')
+    assert hasattr(settings, 'planner_strict_schema')
 
     # Verify defaults
     assert settings.openai_schema_fixer_model == "gpt-4o"
     assert settings.planner_two_stage_enabled is True
+    assert settings.planner_strict_schema is False  # Non-strict mode for sanitizer
+
+
+def test_sanitizer_integration():
+    """Test that sanitizer is imported and available in plans router."""
+    from api.app.routers.plans import sanitize_plan, DATASET_REGISTRY
+
+    # Verify sanitizer is imported
+    assert sanitize_plan is not None
+    assert DATASET_REGISTRY is not None
+
+    # Quick smoke test of sanitizer
+    test_plan = {
+        "version": "1.1",
+        "dataset": {"name": "sst2", "split": "train"},
+        "model": {"name": "cnn"},
+        "config": {
+            "framework": "pytorch",
+            "seed": "42",  # String number
+            "epochs": 10,
+            "batch_size": 32,
+            "learning_rate": 0.001,
+            "optimizer": "adam"
+        },
+        "metrics": ["accuracy"],
+        "visualizations": ["training_curve"],
+        "justifications": {
+            "dataset": {"quote": "test", "citation": "test"},
+            "model": {"quote": "test", "citation": "test"},
+            "config": {"quote": "test", "citation": "test"}
+        },
+        "estimated_runtime_minutes": 15,
+        "license_compliant": True,
+    }
+
+    sanitized, warnings = sanitize_plan(test_plan, DATASET_REGISTRY, {})
+
+    # Verify type coercion worked
+    assert isinstance(sanitized["config"]["seed"], int)
+    assert sanitized["config"]["seed"] == 42

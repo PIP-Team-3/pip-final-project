@@ -1,0 +1,16 @@
+EXISTS: kim_2014_textcnn
+EXISTS: joulin_2016_fasttext
+DOWNLOADING: zhang_2015_charcnn
+DOWNLOADING: he_2015_resnet
+DOWNLOADING: sandler_2018_mobilenetv2
+DOWNLOADING: huang_2017_densenet
+DOWNLOADING: farber_2015_taxi_weather
+DOWNLOADING: bechdel_538
+Invoke-WebRequest : The remote server returned an error: (404) Not Found.
+At C:\Dev\pip-final-project\scripts\download_seed_papers.ps1:15 char:7
++       Invoke-WebRequest -Uri $_.pdf_url -OutFile $out
++       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], WebExc 
+   eption
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+ 

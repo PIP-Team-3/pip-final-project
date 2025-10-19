@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Two-stage planner settings
     openai_schema_fixer_model: str = "gpt-4o"  # Model for Stage 2 schema fixing
     planner_two_stage_enabled: bool = True     # Enable two-stage planner (o3-mini + schema fix)
+    planner_strict_schema: bool = False        # Use strict json_schema (requires additionalProperties: false everywhere)
 
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
