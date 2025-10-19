@@ -1,4 +1,7 @@
 # Claudedocs - P2N Documentation Archive
+> **Heads-up (2025-10-19):** The authoritative docs now live under
+> `docs/current/`. Treat everything in `docs/Claudedocs/` as historical context
+> and cross-check `../current/README.md` before relying on details here.
 **Purpose:** Context documents for Claude Code sessions
 **Last Organized:** 2025-10-07
 
