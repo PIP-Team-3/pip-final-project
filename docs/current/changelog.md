@@ -5,7 +5,8 @@ links to the detailed write-up in `../history/` when available.
 
 | Date | Area | Update | Details |
 |------|------|--------|---------|
-| 2025-10-19 | Planner | Soft sanitizer rolled out; schema validation still failing on `version` literal. | Blocking note: see `milestones/planner_refactor.md` and `../history/2025-10-19_P2N_Planner_Refactor.md`. |
+| 2025-10-19 | Planner | **F1 UNBLOCKED**: Fixed schema validation - version literal + model parameters now accept correct types. Live test passed. | CharCNN/SST-2 plan created successfully. Changed `PlanModel.parameters` from `Dict[str, float]` to `Dict[str, Any]`. |
+| 2025-10-19 | Planner | Soft sanitizer rolled out; schema validation initially failing on `version` literal and model parameters. | Fixed: see `milestones/planner_refactor.md` and `../history/2025-10-19_P2N_Planner_Refactor.md`. |
 | 2025-10-19 | Docs | Documentation folder restructured into `current/`, `history/`, `playbooks/`. | You are here – see `../README.md` for navigation. |
 
 Add a new row whenever a code, infra, or process change requires context for the

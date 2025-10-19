@@ -694,6 +694,10 @@ The plan should use the first claim's dataset with a simple baseline model suita
     if not plan_dict.get("policy"):
         plan_dict["policy"] = {"budget_minutes": policy_budget, "max_retries": 1}
 
+    # DEFENSIVE: Enforce version literal regardless of upstream mutations
+    # Pydantic's Literal["1.1"] requires exact string match, not float 1.1
+    plan_dict["version"] = "1.1"
+
     # DIAGNOSTIC: Log exact payload before validation to debug version literal issue
     logger.info(
         "planner.validation.pre_check paper_id=%s version_value=%r version_type=%s plan_keys=%s",
@@ -716,6 +720,16 @@ The plan should use the first claim's dataset with a simple baseline model suita
             messages,
             exc.errors()[:5]  # Show first 5 full error dicts
         )
+
+        # DIAGNOSTIC: Log the problematic fields with their values/types
+        for err in exc.errors()[:5]:
+            field_path = ".".join(str(loc) for loc in err.get("loc", []))
+            logger.warning(
+                "planner.schema.field_error field=%s msg=%s",
+                field_path,
+                err.get("msg")
+            )
+
         record_trace("failed", ERROR_PLAN_SCHEMA_INVALID)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

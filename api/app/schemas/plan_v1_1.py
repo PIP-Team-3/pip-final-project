@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -22,7 +22,10 @@ class PlanDataset(BaseModel):
 class PlanModel(BaseModel):
     name: str = Field(..., min_length=1)
     variant: Optional[str] = None
-    parameters: Dict[str, float] | None = None
+    parameters: Dict[str, Any] | None = Field(
+        None,
+        description="Model hyperparameters (can be int, float, str, list, etc.)"
+    )
     size_category: Literal["tiny", "small", "medium"] = Field(
         default="tiny",
         description="Qualitative size bucket for the chosen model.",
