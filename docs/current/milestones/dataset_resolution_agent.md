@@ -12,10 +12,12 @@
 4. **Promote** newly built dataset adapters into the first-class registry, shrinking the unsupported surface area over time.
 
 ## Deliverables & Phases
-### Phase A – Resolver Scaffold (1 week)
-- Introduce `DatasetResolution` module that classifies datasets as `resolved`, `blocked`, `unknown`, or `complex`.
-- Extend planner response with a `data_resolution` block so API consumers see the outcome.
-- Unit + integration tests covering registry hits, blocked datasets, and unknowns.
+### Phase A – Resolver Scaffold ✅ COMPLETE (2025-10-19)
+- ✅ Introduced `DatasetResolution` module that classifies datasets as `resolved`, `blocked`, `unknown`, or `complex`
+- ✅ Extended planner response with `data_resolution` field with status, canonical_name, reason, suggestions
+- ✅ Unit tests: 32/32 passing (classification, normalization, complexity detection, plan-level resolution)
+- ✅ Integration: Tested with live planner, SST-2 returns `resolved` with canonical name
+- ✅ Files: `api/app/materialize/dataset_resolution.py`, `api/tests/test_dataset_resolution.py`
 
 ### Phase B – Dataset Advisor Agent (1 week)
 - Create an `AgentRole.DATASET_ADVISOR` with project context (registry, adapters, policy caps).

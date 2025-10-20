@@ -65,11 +65,24 @@ class PlannerRequest(BaseModel):
     budget_minutes: int = Field(20, ge=1, le=20)
 
 
+class DataResolutionInfo(BaseModel):
+    """Dataset resolution status in planner response (Phase A feature)."""
+    status: str = Field(..., description="Resolution status: resolved, blocked, unknown, complex")
+    dataset: str = Field(..., description="Original dataset name from claim")
+    canonical_name: Optional[str] = Field(None, description="Normalized registry name if resolved")
+    reason: Optional[str] = Field(None, description="Explanation for blocked/unknown/complex status")
+    suggestions: list[str] = Field(default_factory=list, description="Brief suggestions for next steps")
+
+
 class PlannerResponse(BaseModel):
     plan_id: str
     plan_version: str
     plan_json: PlanDocumentV11
     warnings: list[str] = Field(default_factory=list)
+    data_resolution: Optional[DataResolutionInfo] = Field(
+        None,
+        description="Dataset resolution status (Phase A: Dataset Resolution Assistant)"
+    )
 
 
 class MaterializeResponse(BaseModel):
@@ -540,6 +553,56 @@ The plan should use the first claim's dataset with a simple baseline model suita
                 list(plan_raw.keys())
             )
 
+        # RESOLVER: Classify dataset before sanitization (Phase A: Dataset Resolution Assistant)
+        # Provides early detection of resolution issues and better user feedback
+        data_resolution_info = None
+        try:
+            from ..materialize.dataset_resolution import resolve_dataset_for_plan
+            from ..materialize.sanitizer import BLOCKED_DATASETS
+
+            with traced_subspan(span, "p2n.planner.resolution"):
+                resolution = resolve_dataset_for_plan(
+                    plan_dict=plan_raw,
+                    registry=DATASET_REGISTRY,
+                    blocked_list=BLOCKED_DATASETS
+                )
+
+                if resolution:
+                    logger.info(
+                        "planner.resolution.complete dataset=%s status=%s canonical=%s",
+                        resolution.dataset_name,
+                        resolution.status.value,
+                        resolution.canonical_name
+                    )
+
+                    # Convert to response schema
+                    data_resolution_info = DataResolutionInfo(
+                        status=resolution.status.value,
+                        dataset=resolution.dataset_name,
+                        canonical_name=resolution.canonical_name,
+                        reason=resolution.reason,
+                        suggestions=resolution.suggestions or []
+                    )
+
+                    # Log warning for non-resolved datasets
+                    if resolution.status.value != "resolved":
+                        logger.warning(
+                            "planner.resolution.non_resolved dataset=%s status=%s reason=%s",
+                            resolution.dataset_name,
+                            resolution.status.value,
+                            resolution.reason
+                        )
+                else:
+                    logger.warning("planner.resolution.no_dataset plan_keys=%s", list(plan_raw.keys()))
+
+        except Exception as resolution_exc:
+            # Non-blocking: continue to sanitizer even if resolver fails
+            logger.error(
+                "planner.resolution.failed paper_id=%s error=%s",
+                paper.id,
+                str(resolution_exc)
+            )
+
         # SANITIZER: Apply post-Stage-2 cleanup (type coercion, pruning, dataset resolution)
         # This ensures plans are runnable even when Stage 2 returns slightly malformed data
         sanitizer_warnings = []
@@ -772,6 +835,7 @@ The plan should use the first claim's dataset with a simple baseline model suita
         plan_version=plan_model.version,
         plan_json=plan_model,
         warnings=sanitizer_warnings,
+        data_resolution=data_resolution_info,  # Phase A: Dataset Resolution Assistant
     )
 
 
